@@ -19,28 +19,82 @@ type OpenCode struct{}
 
 func (o *OpenCode) Name() string { return "opencode" }
 
-// buildOpenCodeEnv returns process environment with an isolated XDG_DATA_HOME.
-// This prevents opencode OAuth credentials from overriding provider API keys
-// set by ralph token switching.
-func buildOpenCodeEnv(workdir string) ([]string, error) {
+// openCodeDataHome returns the real opencode data home directory.
+// It checks XDG_DATA_HOME first, then falls back to ~/.local/share.
+func openCodeDataHome() string {
+	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
+		return filepath.Join(xdg, "opencode")
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".local", "share", "opencode")
+}
+
+// buildOpenCodeEnv returns process environment with an isolated XDG_DATA_HOME
+// that mirrors the real opencode data dir but replaces auth.json with an empty
+// file. This forces opencode to use env-var API keys instead of its stored
+// OAuth credentials, making ralph token switching work.
+//
+// If realDataHome is empty, it auto-detects from XDG_DATA_HOME / ~/.local/share.
+func buildOpenCodeEnv(workdir string, realDataHome string) ([]string, error) {
 	if workdir == "" {
 		workdir = "."
 	}
-	dataHome := filepath.Join(workdir, ".ralph", "opencode-data")
-	if err := os.MkdirAll(dataHome, 0755); err != nil {
-		return nil, fmt.Errorf("creating opencode data directory: %w", err)
+
+	if realDataHome == "" {
+		realDataHome = openCodeDataHome()
+	}
+
+	mirrorBase := filepath.Join(workdir, ".ralph", "opencode-data")
+	mirrorOpencode := filepath.Join(mirrorBase, "opencode")
+	if err := os.MkdirAll(mirrorOpencode, 0755); err != nil {
+		return nil, fmt.Errorf("creating opencode mirror directory: %w", err)
+	}
+
+	// Symlink all entries from real data home except auth.json
+	entries, err := os.ReadDir(realDataHome)
+	if err != nil {
+		// If real data home doesn't exist, just use the empty mirror
+		if os.IsNotExist(err) {
+			entries = nil
+		} else {
+			return nil, fmt.Errorf("reading opencode data home: %w", err)
+		}
+	}
+
+	for _, entry := range entries {
+		name := entry.Name()
+		mirrorPath := filepath.Join(mirrorOpencode, name)
+		realPath := filepath.Join(realDataHome, name)
+
+		if name == "auth.json" {
+			// Write empty JSON so opencode doesn't error on missing file
+			if err := os.WriteFile(mirrorPath, []byte("{}"), 0644); err != nil {
+				return nil, fmt.Errorf("writing empty auth.json: %w", err)
+			}
+			continue
+		}
+
+		// Skip if already exists (idempotent)
+		if _, err := os.Lstat(mirrorPath); err == nil {
+			continue
+		}
+
+		// Symlink everything else
+		if err := os.Symlink(realPath, mirrorPath); err != nil {
+			return nil, fmt.Errorf("symlinking %s: %w", name, err)
+		}
 	}
 
 	env := os.Environ()
 	prefix := "XDG_DATA_HOME="
 	for i, e := range env {
 		if strings.HasPrefix(e, prefix) {
-			env[i] = prefix + dataHome
+			env[i] = prefix + mirrorBase
 			return env, nil
 		}
 	}
 
-	env = append(env, prefix+dataHome)
+	env = append(env, prefix+mirrorBase)
 	return env, nil
 }
 
@@ -54,7 +108,7 @@ func (o *OpenCode) CheckAuth(ctx context.Context, model string) error {
 
 	cmd := exec.CommandContext(ctx, opencodeBin, "run", "-m", model)
 	cmd.Stdin = strings.NewReader("respond with exactly: RALPH_OK")
-	env, envErr := buildOpenCodeEnv(".")
+	env, envErr := buildOpenCodeEnv(".", "")
 	if envErr != nil {
 		return envErr
 	}
@@ -86,7 +140,7 @@ func (o *OpenCode) RunPrompt(ctx context.Context, promptFile string, workdir str
 	cmd := exec.CommandContext(ctx, opencodeBin, "run", "-m", model)
 	cmd.Dir = workdir
 	cmd.Stdin = f
-	env, envErr := buildOpenCodeEnv(workdir)
+	env, envErr := buildOpenCodeEnv(workdir, "")
 	if envErr != nil {
 		return "", -1, envErr
 	}
