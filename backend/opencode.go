@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -18,6 +19,31 @@ type OpenCode struct{}
 
 func (o *OpenCode) Name() string { return "opencode" }
 
+// buildOpenCodeEnv returns process environment with an isolated XDG_DATA_HOME.
+// This prevents opencode OAuth credentials from overriding provider API keys
+// set by ralph token switching.
+func buildOpenCodeEnv(workdir string) ([]string, error) {
+	if workdir == "" {
+		workdir = "."
+	}
+	dataHome := filepath.Join(workdir, ".ralph", "opencode-data")
+	if err := os.MkdirAll(dataHome, 0755); err != nil {
+		return nil, fmt.Errorf("creating opencode data directory: %w", err)
+	}
+
+	env := os.Environ()
+	prefix := "XDG_DATA_HOME="
+	for i, e := range env {
+		if strings.HasPrefix(e, prefix) {
+			env[i] = prefix + dataHome
+			return env, nil
+		}
+	}
+
+	env = append(env, prefix+dataHome)
+	return env, nil
+}
+
 func (o *OpenCode) CheckAuth(ctx context.Context, model string) error {
 	if _, err := exec.LookPath(opencodeBin); err != nil {
 		return fmt.Errorf("%s not found in PATH: %w", opencodeBin, err)
@@ -28,6 +54,11 @@ func (o *OpenCode) CheckAuth(ctx context.Context, model string) error {
 
 	cmd := exec.CommandContext(ctx, opencodeBin, "run", "-m", model)
 	cmd.Stdin = strings.NewReader("respond with exactly: RALPH_OK")
+	env, envErr := buildOpenCodeEnv(".")
+	if envErr != nil {
+		return envErr
+	}
+	cmd.Env = env
 
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -55,6 +86,11 @@ func (o *OpenCode) RunPrompt(ctx context.Context, promptFile string, workdir str
 	cmd := exec.CommandContext(ctx, opencodeBin, "run", "-m", model)
 	cmd.Dir = workdir
 	cmd.Stdin = f
+	env, envErr := buildOpenCodeEnv(workdir)
+	if envErr != nil {
+		return "", -1, envErr
+	}
+	cmd.Env = env
 
 	var buf bytes.Buffer
 	cmd.Stdout = io.MultiWriter(os.Stdout, &buf)
