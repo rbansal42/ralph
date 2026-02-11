@@ -97,24 +97,6 @@ func runTokenList(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// activeTokenFile is the file that persists the active token name across processes.
-const activeTokenFile = ".ralph-token"
-
-// saveActiveToken writes the active token name to .ralph-token.
-func saveActiveToken(name string) error {
-	return os.WriteFile(activeTokenFile, []byte(name+"\n"), 0644)
-}
-
-// loadActiveToken reads the active token name from .ralph-token.
-// Returns empty string if file doesn't exist.
-func loadActiveToken() string {
-	data, err := os.ReadFile(activeTokenFile)
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(data))
-}
-
 func runTokenSwitch(cmd *cobra.Command, args []string) error {
 	cfg, err := config.Load(cfgFile)
 	if err != nil {
@@ -126,11 +108,6 @@ func runTokenSwitch(cmd *cobra.Command, args []string) error {
 
 	if err := tm.SetByName(name); err != nil {
 		return err
-	}
-
-	// Persist so ralph run picks it up
-	if err := saveActiveToken(name); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: could not persist active token: %v\n", err)
 	}
 
 	cur := tm.Current()

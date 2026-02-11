@@ -125,19 +125,15 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 	tokenMgr := permission.NewTokenManager(cfg.Backend, tokenEntries)
 
-	// Activate preferred token (from .ralph-token) or first available
+	// Activate first token if available
 	if tokenMgr.Count() > 0 {
-		if preferred := loadActiveToken(); preferred != "" {
-			if err := tokenMgr.SetByName(preferred); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: preferred token %q not found, using first: %v\n", preferred, err)
-				tokenMgr.Activate()
-			}
+		if err := tokenMgr.Activate(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to activate token: %v\n", err)
 		} else {
-			tokenMgr.Activate()
-		}
-		fmt.Printf("Token pool: %d token(s) available\n", tokenMgr.Count())
-		for _, line := range tokenMgr.List() {
-			fmt.Printf("  %s\n", line)
+			fmt.Printf("Token pool: %d token(s) available\n", tokenMgr.Count())
+			for _, line := range tokenMgr.List() {
+				fmt.Printf("  %s\n", line)
+			}
 		}
 	}
 
