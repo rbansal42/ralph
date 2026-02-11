@@ -98,6 +98,24 @@ func buildOpenCodeEnv(workdir string, realDataHome string) ([]string, error) {
 	return env, nil
 }
 
+// hasAPIKeyInEnv returns true if a real API key (not an OAuth token) is set
+// in the environment. OAuth access tokens start with "sk-ant-oat" and should
+// not trigger auth isolation.
+func hasAPIKeyInEnv() bool {
+	for _, envVar := range []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY"} {
+		key := os.Getenv(envVar)
+		if key == "" {
+			continue
+		}
+		// OAuth access tokens are not real API keys
+		if strings.HasPrefix(key, "sk-ant-oat") {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
 func (o *OpenCode) CheckAuth(ctx context.Context, model string) error {
 	if _, err := exec.LookPath(opencodeBin); err != nil {
 		return fmt.Errorf("%s not found in PATH: %w", opencodeBin, err)
@@ -108,11 +126,16 @@ func (o *OpenCode) CheckAuth(ctx context.Context, model string) error {
 
 	cmd := exec.CommandContext(ctx, opencodeBin, "run", "-m", model)
 	cmd.Stdin = strings.NewReader("respond with exactly: RALPH_OK")
-	env, envErr := buildOpenCodeEnv(".", "")
-	if envErr != nil {
-		return envErr
+
+	// Only isolate auth when a real API key is in the environment.
+	// Otherwise let opencode use its own OAuth credentials.
+	if hasAPIKeyInEnv() {
+		env, envErr := buildOpenCodeEnv(".", "")
+		if envErr != nil {
+			return envErr
+		}
+		cmd.Env = env
 	}
-	cmd.Env = env
 
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -140,11 +163,14 @@ func (o *OpenCode) RunPrompt(ctx context.Context, promptFile string, workdir str
 	cmd := exec.CommandContext(ctx, opencodeBin, "run", "-m", model)
 	cmd.Dir = workdir
 	cmd.Stdin = f
-	env, envErr := buildOpenCodeEnv(workdir, "")
-	if envErr != nil {
-		return "", -1, envErr
+
+	if hasAPIKeyInEnv() {
+		env, envErr := buildOpenCodeEnv(workdir, "")
+		if envErr != nil {
+			return "", -1, envErr
+		}
+		cmd.Env = env
 	}
-	cmd.Env = env
 
 	var buf bytes.Buffer
 	cmd.Stdout = io.MultiWriter(os.Stdout, &buf)
