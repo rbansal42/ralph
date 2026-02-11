@@ -26,6 +26,8 @@ type Worker struct {
 	GitMutex      *sync.Mutex
 	StateMutex    *sync.Mutex
 	Shutdown      *atomic.Bool
+	TokenManager  interface{ RotateIfRateLimited(string) bool } // *permission.TokenManager
+	PermHandler   func(output string) bool                      // called on permission block detection
 	CurrentStatus string
 	StatusMutex   sync.RWMutex
 }
@@ -113,13 +115,23 @@ func (w *Worker) Run(ctx context.Context) error {
 			w.Num, w.Name, i, len(items), len(pending))
 
 		startTime := time.Now()
-		_, exitCode, runErr := w.Backend.RunPrompt(ctx, promptFile, w.Config.Workdir, w.Config.Model)
+		output, exitCode, runErr := w.Backend.RunPrompt(ctx, promptFile, w.Config.Workdir, w.Config.Model)
 		elapsed := time.Since(startTime)
 
 		if runErr != nil {
 			fmt.Printf("[W%d %s] Iteration #%d: backend error: %v\n", w.Num, w.Name, i, runErr)
 			// Continue to commit and record state even on error — the agent
 			// may have made partial progress.
+		}
+
+		// Check for rate limiting — auto-rotate token if possible.
+		if w.TokenManager != nil && w.TokenManager.RotateIfRateLimited(output) {
+			fmt.Printf("[W%d %s] Rate limit detected — rotated to next token\n", w.Num, w.Name)
+		}
+
+		// Check for permission blocks — ask user to approve external dirs.
+		if w.PermHandler != nil && w.PermHandler(output) {
+			fmt.Printf("[W%d %s] Permission issue resolved — will retry on next iteration\n", w.Num, w.Name)
 		}
 
 		// Count remaining items after the agent ran.

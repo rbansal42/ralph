@@ -14,6 +14,13 @@ var modelAliases = map[string]string{
 	"sonnet": "anthropic/claude-sonnet-4-5",
 }
 
+// TokenConfig defines an API token entry for the token pool.
+type TokenConfig struct {
+	Name    string `toml:"name"`
+	Key     string `toml:"key"`
+	Backend string `toml:"backend"` // "opencode" or "claude"; empty = applies to configured backend
+}
+
 // WorkerConfig defines a named worker with a file-matching pattern.
 type WorkerConfig struct {
 	Name    string `toml:"name"`
@@ -32,6 +39,8 @@ type Config struct {
 	ItemsPerIteration int            `toml:"items_per_iteration"`
 	StateFile         string         `toml:"state_file"`
 	Workdir           string         `toml:"workdir"`
+	ExternalDirs      []string       `toml:"external_dirs"`
+	Tokens            []TokenConfig  `toml:"token"`
 	Workers           []WorkerConfig `toml:"worker"`
 }
 
