@@ -14,6 +14,7 @@ import (
 
 	"github.com/rahulvramesh/ralph/backend"
 	"github.com/rahulvramesh/ralph/config"
+	"github.com/rahulvramesh/ralph/permission"
 	"github.com/rahulvramesh/ralph/state"
 	"github.com/rahulvramesh/ralph/ui"
 	"github.com/rahulvramesh/ralph/worker"
@@ -94,7 +95,49 @@ func runRun(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// 7. Check auth
+	// 7. Set up permissions (auto-create opencode.json if needed)
+	fmt.Print("Setting up permissions... ")
+	if err := permission.EnsurePermissions(cfg); err != nil {
+		fmt.Println("WARNING:", err)
+	} else {
+		fmt.Println("OK")
+		if cfg.Backend == "opencode" {
+			if len(cfg.ExternalDirs) > 0 {
+				fmt.Printf("  External dirs allowed: %s\n", strings.Join(cfg.ExternalDirs, ", "))
+			}
+		}
+	}
+
+	// 8. Set up token manager
+	var tokenEntries []permission.TokenEntry
+	for _, tc := range cfg.Tokens {
+		b := tc.Backend
+		if b == "" {
+			b = cfg.Backend
+		}
+		if b == cfg.Backend {
+			tokenEntries = append(tokenEntries, permission.TokenEntry{
+				Name:   tc.Name,
+				Key:    tc.Key,
+				EnvVar: permission.ResolveEnvVar(cfg.Backend, tc.Key),
+			})
+		}
+	}
+	tokenMgr := permission.NewTokenManager(cfg.Backend, tokenEntries)
+
+	// Activate first token if available
+	if tokenMgr.Count() > 0 {
+		if err := tokenMgr.Activate(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to activate token: %v\n", err)
+		} else {
+			fmt.Printf("Token pool: %d token(s) available\n", tokenMgr.Count())
+			for _, line := range tokenMgr.List() {
+				fmt.Printf("  %s\n", line)
+			}
+		}
+	}
+
+	// 9. Check auth
 	ctx := context.Background()
 	if err := b.CheckAuth(ctx, cfg.Model); err != nil {
 		fmt.Fprintf(os.Stderr, "\nAuth check failed: %v\n\n", err)
@@ -121,7 +164,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		fmt.Println("Auth successful!")
 	}
 
-	// 8. Load state
+	// 10. Load state
 	st, err := state.Load(cfg.StateFile)
 	if err != nil {
 		return fmt.Errorf("loading state: %w", err)
@@ -151,6 +194,37 @@ func runRun(cmd *cobra.Command, args []string) error {
 		os.Exit(1)
 	}()
 
+	// Permission handler — called when a worker detects a permission block.
+	// Prompts the user, adds the directory to opencode.json, and returns true if resolved.
+	permHandler := func(output string) bool {
+		blockedPath := permission.DetectPermissionBlock(output)
+		if blockedPath == "" {
+			return false
+		}
+
+		fmt.Printf("\n  Permission block detected for: %s\n", blockedPath)
+		fmt.Print("  Allow access to this directory? [Y/n]: ")
+		reader := bufio.NewReader(os.Stdin)
+		answer, _ := reader.ReadString('\n')
+		answer = strings.TrimSpace(strings.ToLower(answer))
+
+		if answer == "" || answer == "y" || answer == "yes" {
+			workdir := cfg.Workdir
+			if workdir == "" {
+				workdir = "."
+			}
+			if err := permission.AddExternalDir(workdir, blockedPath); err != nil {
+				fmt.Fprintf(os.Stderr, "  Failed to update permissions: %v\n", err)
+				return false
+			}
+			fmt.Printf("  Added %s to opencode.json — will retry\n", blockedPath)
+			return true
+		}
+
+		fmt.Println("  Denied — worker will continue without access")
+		return false
+	}
+
 	// Build workers
 	workers := make([]*worker.Worker, 0, len(cfg.Workers))
 	for i, wc := range cfg.Workers {
@@ -165,6 +239,8 @@ func runRun(cmd *cobra.Command, args []string) error {
 			GitMutex:     &gitMutex,
 			StateMutex:   &stateMutex,
 			Shutdown:     &shutdown,
+			TokenManager: tokenMgr,
+			PermHandler:  permHandler,
 		}
 		workers = append(workers, w)
 	}

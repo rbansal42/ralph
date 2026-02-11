@@ -28,6 +28,7 @@ func init() {
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(authCmd)
 	rootCmd.AddCommand(generateCmd)
+	rootCmd.AddCommand(tokenCmd)
 }
 
 func Execute() {
