@@ -80,6 +80,23 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
+// AppendToken adds a [[token]] entry to the ralph.toml file at path.
+// It appends to the end of the file so existing content is untouched.
+func AppendToken(path string, name, key string) error {
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("opening config file: %w", err)
+	}
+	defer f.Close()
+
+	entry := fmt.Sprintf("\n[[token]]\nname = %q\nkey = %q\n", name, key)
+	if _, err := f.WriteString(entry); err != nil {
+		return fmt.Errorf("writing token entry: %w", err)
+	}
+
+	return nil
+}
+
 // validate checks that cfg satisfies all required constraints.
 func validate(cfg *Config) error {
 	if cfg.Backend != "opencode" && cfg.Backend != "claude" {

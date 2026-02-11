@@ -32,10 +32,10 @@ var tokenSwitchCmd = &cobra.Command{
 
 var tokenAddCmd = &cobra.Command{
 	Use:   "add [name] [key]",
-	Short: "Add a token to the current session (not persisted to config)",
-	Long: `Add a token to the current session. The token is not persisted to ralph.toml.
+	Short: "Add a token to ralph.toml",
+	Long: `Add a token to ralph.toml for use in the token pool.
 
-  ralph token add                  Interactive — prompts for key and name
+  ralph token add                  Interactive — prompts for key (hidden) and name
   ralph token add <key>            Auto-names the token (token-1, token-2, ...)
   ralph token add <name> <key>     Explicit name and key`,
 	Args: cobra.MaximumNArgs(2),
@@ -194,19 +194,20 @@ func runTokenAdd(cmd *cobra.Command, args []string) error {
 		key = args[1]
 	}
 
-	envVar := permission.ResolveEnvVar(cfg.Backend, key)
-	if err := os.Setenv(envVar, key); err != nil {
-		return fmt.Errorf("setting env var: %w", err)
+	// Check for duplicate name
+	for _, t := range cfg.Tokens {
+		if t.Name == name {
+			return fmt.Errorf("token %q already exists — use a different name or edit ralph.toml", name)
+		}
 	}
 
-	fmt.Printf("Added token %q for this session\n", name)
-	fmt.Printf("Set %s=%s\n", envVar, permission.MaskKey(key))
-	fmt.Println()
-	fmt.Println("To persist, add to ralph.toml:")
-	fmt.Println()
-	fmt.Printf("  [[token]]\n")
-	fmt.Printf("  name = %q\n", name)
-	fmt.Printf("  key = %q\n", key)
+	// Persist to ralph.toml
+	if err := config.AppendToken(cfgFile, name, key); err != nil {
+		return fmt.Errorf("saving token: %w", err)
+	}
+
+	fmt.Printf("Added token %q to %s\n", name, cfgFile)
+	fmt.Printf("Key: %s\n", permission.MaskKey(key))
 
 	return nil
 }
