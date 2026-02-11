@@ -239,6 +239,17 @@ Ralph supports a pool of API tokens for handling rate limits or switching betwee
 
 **Manual switching:** Use `ralph token switch <name>` to switch between configured tokens.
 
+### Live Hotkeys During `ralph run`
+
+When multiple tokens are configured, ralph enables live hotkey support during a run:
+
+| Key | Action |
+|-----|--------|
+| `t` | Rotate to the next token in the pool — new iterations will use it |
+| `s` | Print current token pool status (which token is active, masked keys) |
+
+Hotkeys require a real terminal (not piped stdin). If stdin is not a TTY, hotkeys are silently disabled. The terminal is set to raw mode to read single keypresses and restored on exit.
+
 ## State & Resume
 
 Ralph saves progress to `ralph_state.json` after every iteration. If you stop ralph (Ctrl+C, crash, or manual kill), running `ralph run` again picks up where each worker left off — it reads the last iteration number from the state file and continues from there.
@@ -285,7 +296,8 @@ ralph/
 │   ├── status.go              # ralph status — progress display
 │   ├── auth.go                # ralph auth — authentication testing
 │   ├── token.go               # ralph token — token pool management
-│   └── generate.go            # ralph generate — setup wizard
+│   ├── generate.go            # ralph generate — setup wizard
+│   └── terminal_unix.go       # Raw terminal mode for hotkey support (unix only)
 ├── config/
 │   └── config.go              # ralph.toml parsing (TOML → Config struct)
 ├── backend/

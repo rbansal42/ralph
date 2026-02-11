@@ -194,6 +194,12 @@ func runRun(cmd *cobra.Command, args []string) error {
 		os.Exit(1)
 	}()
 
+	// 12b. Hotkey listener for live token switching
+	if tokenMgr.Count() > 1 {
+		fmt.Printf("\nHotkeys: [t] rotate token | [s] status\n\n")
+		go listenHotkeys(tokenMgr, cfg, &shutdown)
+	}
+
 	// Permission handler — called when a worker detects a permission block.
 	// Prompts the user, adds the directory to opencode.json, and returns true if resolved.
 	permHandler := func(output string) bool {
@@ -333,4 +339,54 @@ func buildLiveWorkerInfos(cfg *config.Config, workers []*worker.Worker) []ui.Wor
 		})
 	}
 	return infos
+}
+
+// listenHotkeys reads single keypresses from stdin for live token switching.
+// Runs as a goroutine during ralph run.
+func listenHotkeys(tokenMgr *permission.TokenManager, cfg *config.Config, shutdown *atomic.Bool) {
+	// Set terminal to raw mode to read single characters
+	// Save old state and restore on exit
+	fd := int(os.Stdin.Fd())
+	oldState, err := makeRaw(fd)
+	if err != nil {
+		// Can't set raw mode (piped stdin, not a terminal) — skip hotkeys silently
+		return
+	}
+	defer restoreTerminal(fd, oldState)
+
+	buf := make([]byte, 1)
+	for {
+		if shutdown.Load() {
+			return
+		}
+
+		n, err := os.Stdin.Read(buf)
+		if err != nil || n == 0 {
+			return
+		}
+
+		switch buf[0] {
+		case 't':
+			// Rotate to next token
+			entry, err := tokenMgr.Rotate()
+			if err != nil {
+				fmt.Printf("\n[ralph] Token rotate failed: %v\n", err)
+			} else {
+				fmt.Printf("\n[ralph] Switched to token: %s (%s)\n", entry.Name, permission.MaskKey(entry.Key))
+				fmt.Println("[ralph] New iterations will use this token")
+			}
+
+		case 's':
+			// Print status
+			fmt.Println()
+			fmt.Println("[ralph] Token pool:")
+			for _, line := range tokenMgr.List() {
+				fmt.Printf("  %s\n", line)
+			}
+
+		case 3: // Ctrl+C
+			// Let the signal handler deal with it
+			return
+		}
+	}
 }
