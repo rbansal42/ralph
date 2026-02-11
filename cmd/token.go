@@ -59,7 +59,7 @@ func buildTokenManager(cfg *config.Config) *permission.TokenManager {
 			entries = append(entries, permission.TokenEntry{
 				Name:   tc.Name,
 				Key:    tc.Key,
-				EnvVar: permission.ResolveEnvVar(cfg.Backend, tc.Key),
+				EnvVar: permission.ResolveEnvVarForModel(cfg.Backend, cfg.Model, tc.Key),
 			})
 		}
 	}

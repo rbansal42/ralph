@@ -51,7 +51,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 
 	// 2. Apply flag overrides
 	if flagModel != "" {
-		cfg.Model = flagModel
+		cfg.Model = config.ResolveModelAlias(flagModel)
 	}
 	if flagBackend != "" {
 		cfg.Backend = flagBackend
@@ -119,7 +119,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 			tokenEntries = append(tokenEntries, permission.TokenEntry{
 				Name:   tc.Name,
 				Key:    tc.Key,
-				EnvVar: permission.ResolveEnvVar(cfg.Backend, tc.Key),
+				EnvVar: permission.ResolveEnvVarForModel(cfg.Backend, cfg.Model, tc.Key),
 			})
 		}
 	}
@@ -151,12 +151,8 @@ func runRun(cmd *cobra.Command, args []string) error {
 		}
 		token = strings.TrimSpace(token)
 
-		switch cfg.Backend {
-		case "opencode":
-			os.Setenv("ANTHROPIC_API_KEY", token)
-		case "claude":
-			os.Setenv("CLAUDE_CODE_OAUTH_TOKEN", token)
-		}
+		envVar := permission.ResolveEnvVarForModel(cfg.Backend, cfg.Model, token)
+		os.Setenv(envVar, token)
 
 		if err := b.CheckAuth(ctx, cfg.Model); err != nil {
 			return fmt.Errorf("auth still failing after token: %w", err)

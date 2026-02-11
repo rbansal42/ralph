@@ -10,8 +10,21 @@ import (
 
 // modelAliases maps short model names to their fully qualified identifiers.
 var modelAliases = map[string]string{
-	"opus":   "anthropic/claude-opus-4-6",
-	"sonnet": "anthropic/claude-sonnet-4-5",
+	"opus":          "anthropic/claude-opus-4-6",
+	"sonnet":        "anthropic/claude-sonnet-4-5",
+	"gpt5":          "openai/gpt-5",
+	"gpt-5.3-codex": "openai/gpt-5.3-codex",
+	"o3":            "openai/o3",
+	"o4mini":        "openai/o4-mini",
+}
+
+// ResolveModelAlias maps friendly model aliases to full model IDs.
+// Unknown values are returned unchanged.
+func ResolveModelAlias(model string) string {
+	if resolved, ok := modelAliases[model]; ok {
+		return resolved
+	}
+	return model
 }
 
 // TokenConfig defines an API token entry for the token pool.
@@ -63,9 +76,7 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parsing config file: %w", err)
 	}
 
-	if resolved, ok := modelAliases[cfg.Model]; ok {
-		cfg.Model = resolved
-	}
+	cfg.Model = ResolveModelAlias(cfg.Model)
 
 	dur, err := time.ParseDuration(cfg.CooldownRaw)
 	if err != nil {

@@ -88,7 +88,9 @@ Start workers to process checklist items.
 ```bash
 ralph run                     # start all workers in parallel
 ralph run --worker 1          # start only worker 1
-ralph run --model opus        # override model (aliases: opus, sonnet)
+ralph run --model opus        # Anthropic alias
+ralph run --model gpt5        # OpenAI alias
+ralph run --model openai/gpt-5-mini
 ralph run --dry-run           # show what each worker would do, don't execute
 ralph run --backend claude    # override backend
 ```
@@ -133,7 +135,7 @@ Manage API tokens for switching between accounts.
 ```bash
 ralph token list              # show all configured tokens (keys masked)
 ralph token switch work       # switch to the "work" token
-ralph token add temp sk-...   # add a token for this session only
+ralph token add temp sk-...   # add + persist token in ralph.toml
 ```
 
 ### `ralph generate`
@@ -166,7 +168,7 @@ checklist = "REVIEW_CHECKLIST.md"
 # Path to the prompt template file
 prompt = "ralph_prompt.md"
 
-# Model ID or alias (opus, sonnet)
+# Model ID or alias (opus, sonnet, gpt5, o3, o4mini)
 model = "anthropic/claude-opus-4-6"
 
 # Pause between iterations

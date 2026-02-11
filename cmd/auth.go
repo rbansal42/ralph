@@ -10,6 +10,7 @@ import (
 
 	"github.com/rahulvramesh/ralph/backend"
 	"github.com/rahulvramesh/ralph/config"
+	"github.com/rahulvramesh/ralph/permission"
 	"github.com/spf13/cobra"
 )
 
@@ -42,7 +43,7 @@ func runAuth(cmd *cobra.Command, args []string) error {
 	}
 	model := cfg.Model
 	if authModel != "" {
-		model = authModel
+		model = config.ResolveModelAlias(authModel)
 	}
 
 	b, err := backend.New(backendName)
@@ -73,16 +74,8 @@ func runAuth(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no token provided, authentication not configured")
 	}
 
-	// Determine the env var for this backend.
-	var envVar string
-	switch backendName {
-	case "opencode":
-		envVar = "ANTHROPIC_API_KEY"
-	case "claude":
-		envVar = "CLAUDE_CODE_OAUTH_TOKEN"
-	default:
-		return fmt.Errorf("unknown backend %q, cannot determine env var", backendName)
-	}
+	// Determine env var from backend/model.
+	envVar := permission.ResolveEnvVarForModel(backendName, model, token)
 
 	// Set env var and retry.
 	os.Setenv(envVar, token)
