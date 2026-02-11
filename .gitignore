@@ -1,0 +1,17 @@
+# Binary
+ralph
+*.exe
+
+# State files (user-specific)
+ralph_state.json
+logs/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
