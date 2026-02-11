@@ -97,6 +97,26 @@ func ResolveEnvVar(backend, key string) string {
 	}
 }
 
+// ResolveEnvVarForModel determines the env var for a backend/model combination.
+// For opencode, model provider takes precedence; if unknown, it falls back to key-based inference.
+func ResolveEnvVarForModel(backend, model, key string) string {
+	switch backend {
+	case "claude":
+		return "CLAUDE_CODE_OAUTH_TOKEN"
+	case "opencode":
+		m := strings.ToLower(strings.TrimSpace(model))
+		if strings.HasPrefix(m, "openai/") || strings.HasPrefix(m, "gpt") || strings.HasPrefix(m, "o1") || strings.HasPrefix(m, "o3") || strings.HasPrefix(m, "o4") {
+			return "OPENAI_API_KEY"
+		}
+		if strings.HasPrefix(m, "anthropic/") || strings.Contains(m, "claude") {
+			return "ANTHROPIC_API_KEY"
+		}
+		return ResolveEnvVar(backend, key)
+	default:
+		return ResolveEnvVar(backend, key)
+	}
+}
+
 // TokenEntriesFromConfig converts raw token config data into TokenEntry values
 // filtered for a specific backend. This is a helper intended to be called by
 // the consumer that has access to config.TokenConfig values.
