@@ -35,6 +35,8 @@ type WorkerState struct {
 	ParentGeneration int               `json:"parent_generation,omitempty"`
 	GenerationRuns   int               `json:"generation_runs,omitempty"`
 	PendingCommitCount int             `json:"pending_commit_count,omitempty"`
+	ResetCount       int               `json:"reset_count,omitempty"`
+	LastResetReason  string            `json:"last_reset_reason,omitempty"`
 	BufferedCompleted []BufferedResult `json:"buffered_completed,omitempty"`
 	BufferedPartial   []BufferedResult `json:"buffered_partial,omitempty"`
 	ClaimedFiles     map[string]string `json:"claimed_files,omitempty"`

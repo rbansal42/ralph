@@ -41,6 +41,11 @@ type Worker struct {
 	StatusMutex   sync.RWMutex
 	ActiveChildren int
 	ChildrenMutex  sync.RWMutex
+	CurrentGeneration int
+	BufferedCompleted int
+	BufferedPartial   int
+	ResetCount        int
+	BufferMutex       sync.RWMutex
 }
 
 // logf writes a formatted log line to stdout.
@@ -83,6 +88,21 @@ func (w *Worker) GetActiveChildren() int {
 	return w.ActiveChildren
 }
 
+func (w *Worker) setBufferState(generation int, completed int, partial int, resetCount int) {
+	w.BufferMutex.Lock()
+	w.CurrentGeneration = generation
+	w.BufferedCompleted = completed
+	w.BufferedPartial = partial
+	w.ResetCount = resetCount
+	w.BufferMutex.Unlock()
+}
+
+func (w *Worker) GetBufferState() (generation int, completed int, partial int, resetCount int) {
+	w.BufferMutex.RLock()
+	defer w.BufferMutex.RUnlock()
+	return w.CurrentGeneration, w.BufferedCompleted, w.BufferedPartial, w.ResetCount
+}
+
 func shouldCommitIteration(exitCode int, runErr error) bool {
 	return exitCode == 0 && runErr == nil
 }
@@ -107,7 +127,20 @@ func (w *Worker) Run(ctx context.Context) error {
 
 	// Determine starting iteration from persisted state.
 	w.StateMutex.Lock()
-	startIter := w.State.GetWorkerIteration(w.Name)
+	ws, ok := w.State.Workers[w.Name]
+	if !ok {
+		ws = &state.WorkerState{ParentGeneration: 1}
+		w.State.Workers[w.Name] = ws
+	}
+	startIter := ws.Iteration
+	currentGeneration := ws.ParentGeneration
+	if currentGeneration <= 0 {
+		currentGeneration = 1
+		ws.ParentGeneration = currentGeneration
+	}
+	generationRuns := ws.GenerationRuns
+	buffer := ResultBufferFromWorkerState(ws)
+	w.setBufferState(currentGeneration, buffer.CompletedCount(), buffer.PartialCount(), ws.ResetCount)
 	w.StateMutex.Unlock()
 
 	consecutiveStale := 0
@@ -164,6 +197,7 @@ func (w *Worker) Run(ctx context.Context) error {
 		}
 
 		// Run the child batch with retry logic for failed iterations.
+		var batch acceptedBatch
 		var output string
 		var exitCode int
 		var runErr error
@@ -188,7 +222,10 @@ func (w *Worker) Run(ctx context.Context) error {
 				w.Num, w.Name, i, len(items), len(pending))
 
 			startTime := time.Now()
-			completed, output, exitCode, runErr = w.runChildBatch(ctx, i, items, partialItems)
+			batch, runErr = w.collectChildBatch(ctx, i, items, partialItems)
+			completed = len(batch.completed)
+			output = batch.output
+			exitCode = batch.exitCode
 			elapsed = time.Since(startTime)
 
 			if runErr != nil {
@@ -248,20 +285,56 @@ func (w *Worker) Run(ctx context.Context) error {
 			}
 		}
 
-		// Commit any changes.
 		if shouldCommitIteration(exitCode, runErr) {
+			acceptedRuns := acceptBatchIntoBuffer(buffer, batch, currentGeneration)
+			generationRuns += acceptedRuns
+			if shouldResetGeneration(generationRuns, w.Config.ParentResetAfterRuns) {
+				currentGeneration++
+				generationRuns = 0
+				ws.ResetCount++
+				ws.LastResetReason = "generation threshold"
+				w.logf("[W%d %s] Parent generation rolled to %d\n", w.Num, w.Name, currentGeneration)
+			}
+		}
+
+		flushCandidates := buffer.FlushCandidates(w.Config.CommitBatchSize)
+
+		// Commit any changes.
+		if shouldCommitIteration(exitCode, runErr) && len(flushCandidates) > 0 {
 			w.setStatus("committing")
-			commitMsg := fmt.Sprintf("ralph: W%d %s iter #%d — %d items completed", w.Num, w.Name, i, completed)
+			paths := make([]string, 0, len(flushCandidates))
+			for _, result := range flushCandidates {
+				paths = append(paths, result.Path)
+			}
+			if markErr := MarkCompletedPaths(w.Config.Checklist, paths); markErr != nil {
+				return fmt.Errorf("[W%d %s] updating checklist for flush: %w", w.Num, w.Name, markErr)
+			}
+			commitMsg := fmt.Sprintf("ralph: W%d %s iter #%d — flushed %d buffered items", w.Num, w.Name, i, len(flushCandidates))
 			if commitErr := w.gitCommit(commitMsg); commitErr != nil {
 				w.logf("[W%d %s] Iteration #%d: git commit warning: %v\n", w.Num, w.Name, i, commitErr)
 				// Non-fatal — agent may not have produced changes.
+			} else {
+				buffer.FlushCompleted(w.Config.CommitBatchSize)
 			}
-		} else {
+		} else if !shouldCommitIteration(exitCode, runErr) {
 			w.logf("[W%d %s] Iteration #%d: skipping git commit because batch did not finish cleanly\n", w.Num, w.Name, i)
+		} else {
+			w.logf("[W%d %s] Iteration #%d: buffered %d completed results waiting for flush threshold %d\n",
+				w.Num, w.Name, i, buffer.CompletedCount(), w.Config.CommitBatchSize)
 		}
 
 		// Update state under lock.
 		w.StateMutex.Lock()
+		ws = w.State.Workers[w.Name]
+		if ws == nil {
+			ws = &state.WorkerState{}
+			w.State.Workers[w.Name] = ws
+		}
+		ws.ParentGeneration = currentGeneration
+		ws.GenerationRuns = generationRuns
+		ws.PendingCommitCount = buffer.CompletedCount()
+		buffer.WriteToWorkerState(ws)
+		w.setBufferState(currentGeneration, buffer.CompletedCount(), buffer.PartialCount(), ws.ResetCount)
 		w.State.RecordIteration(w.Name, i, completed, elapsed, exitCode)
 		if saveErr := w.State.Save(w.Config.StateFile); saveErr != nil {
 			w.StateMutex.Unlock()

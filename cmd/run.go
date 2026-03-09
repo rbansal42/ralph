@@ -470,6 +470,7 @@ func buildWorkerInfos(cfg *config.Config) []ui.WorkerInfo {
 			Status:         "waiting",
 			ChildCapacity:  cfg.WorkerParallelism,
 			ActiveChildren: 0,
+			Generation:     1,
 		})
 	}
 	return infos
@@ -480,6 +481,7 @@ func buildLiveWorkerInfos(cfg *config.Config, workers []*worker.Worker) []ui.Wor
 	infos := make([]ui.WorkerInfo, 0, len(workers))
 	for _, w := range workers {
 		remaining, _ := worker.CountPending(cfg.Checklist, w.Pattern)
+		generation, bufferedCompleted, bufferedPartial, resetCount := w.GetBufferState()
 		infos = append(infos, ui.WorkerInfo{
 			Num:            w.Num,
 			Name:           w.Name,
@@ -488,6 +490,10 @@ func buildLiveWorkerInfos(cfg *config.Config, workers []*worker.Worker) []ui.Wor
 			Status:         w.GetStatus(),
 			ChildCapacity:  cfg.WorkerParallelism,
 			ActiveChildren: w.GetActiveChildren(),
+			Generation:     generation,
+			BufferedCompleted: bufferedCompleted,
+			BufferedPartial:   bufferedPartial,
+			ResetCount:        resetCount,
 		})
 	}
 	return infos
