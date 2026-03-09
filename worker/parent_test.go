@@ -5,6 +5,7 @@ import "testing"
 func newTestParentWorker(parallelism int) *ParentWorker {
 	return &ParentWorker{
 		parallelism: parallelism,
+		Completed:   make(map[string]bool),
 		queue:       make([]Task, 0),
 		inFlight:    make(map[string]Task),
 		claims:      NewClaimTable(),
