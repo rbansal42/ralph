@@ -38,9 +38,19 @@ func runStatus(cmd *cobra.Command, args []string) error {
 
 		ws := st.Workers[wc.Name]
 		var lastElapsed string
+		var generation int
+		var bufferedCompleted int
+		var bufferedPartial int
+		var resetCount int
 		if ws != nil && len(ws.History) > 0 {
 			last := ws.History[len(ws.History)-1]
 			lastElapsed = formatDuration(time.Duration(last.ElapsedS * float64(time.Second)))
+		}
+		if ws != nil {
+			generation = ws.ParentGeneration
+			bufferedCompleted = len(ws.BufferedCompleted)
+			bufferedPartial = len(ws.BufferedPartial)
+			resetCount = ws.ResetCount
 		}
 
 		workerInfos = append(workerInfos, ui.WorkerInfo{
@@ -52,6 +62,10 @@ func runStatus(cmd *cobra.Command, args []string) error {
 			LastElapsed:    lastElapsed,
 			ChildCapacity:  cfg.WorkerParallelism,
 			ActiveChildren: 0,
+			Generation:        generation,
+			BufferedCompleted: bufferedCompleted,
+			BufferedPartial:   bufferedPartial,
+			ResetCount:        resetCount,
 		})
 	}
 
