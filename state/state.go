@@ -17,6 +17,15 @@ type IterationRecord struct {
 	Timestamp string  `json:"timestamp"`
 }
 
+// BufferedResult is a parent-accepted result record that may persist across
+// iterations and generations before it becomes commit-eligible or flushed.
+type BufferedResult struct {
+	Path         string   `json:"path"`
+	FilesChanged []string `json:"files_changed,omitempty"`
+	Complete     bool     `json:"complete"`
+	Generation   int      `json:"generation"`
+}
+
 // WorkerState tracks the cumulative progress for a named worker.
 type WorkerState struct {
 	Iteration        int               `json:"iteration"`
@@ -24,6 +33,10 @@ type WorkerState struct {
 	Skipped          int               `json:"skipped"`
 	History          []IterationRecord `json:"history"`
 	ParentGeneration int               `json:"parent_generation,omitempty"`
+	GenerationRuns   int               `json:"generation_runs,omitempty"`
+	PendingCommitCount int             `json:"pending_commit_count,omitempty"`
+	BufferedCompleted []BufferedResult `json:"buffered_completed,omitempty"`
+	BufferedPartial   []BufferedResult `json:"buffered_partial,omitempty"`
 	ClaimedFiles     map[string]string `json:"claimed_files,omitempty"`
 }
 
