@@ -21,6 +21,7 @@ type fakeParallelBackend struct {
 	maxConcurrent int
 	delay         time.Duration
 	failPaths     map[string]bool
+	partialPaths  map[string]bool
 }
 
 func (b *fakeParallelBackend) Name() string { return "fake" }
@@ -72,6 +73,17 @@ func (b *fakeParallelBackend) RunPrompt(_ context.Context, promptFile string, _ 
 			targetPath,
 		)
 		return output, 1, fmt.Errorf("backend error")
+	}
+
+	if b.partialPaths[targetPath] {
+		output := fmt.Sprintf(
+			"%s{\"attempted\":[%q],\"completed\":[],\"partial\":[%q],\"files_changed\":[%q],\"checklist_lines\":[],\"failure_reason\":\"\"}",
+			childResultMarker,
+			targetPath,
+			targetPath,
+			targetPath,
+		)
+		return output, 0, nil
 	}
 
 	output := fmt.Sprintf(
