@@ -27,3 +27,21 @@ func TestAcceptBatchIntoBufferAssignsGeneration(t *testing.T) {
 		t.Fatalf("partial generation = %d, want 3", buf.partial[0].Generation)
 	}
 }
+
+func TestAcceptBatchIntoBufferPromotesPartialToCompleted(t *testing.T) {
+	buf := NewResultBuffer()
+	buf.Accept(state.BufferedResult{Path: "a", Complete: false, Generation: 1})
+
+	batch := acceptedBatch{
+		completed: []state.BufferedResult{{Path: "a", Complete: true}},
+	}
+	acceptBatchIntoBuffer(buf, batch, 2)
+
+	if buf.PartialCount() != 0 {
+		t.Fatalf("PartialCount() = %d, want 0", buf.PartialCount())
+	}
+	completed := buf.FlushCandidates(1)
+	if len(completed) != 1 || completed[0].Path != "a" || completed[0].Generation != 2 {
+		t.Fatalf("completed = %#v, want promoted completed result", completed)
+	}
+}
