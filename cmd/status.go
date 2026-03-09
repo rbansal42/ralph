@@ -44,12 +44,14 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		}
 
 		workerInfos = append(workerInfos, ui.WorkerInfo{
-			Num:         i + 1,
-			Name:        wc.Name,
-			Pattern:     wc.Pattern,
-			Remaining:   remaining,
-			Status:      "idle",
-			LastElapsed: lastElapsed,
+			Num:            i + 1,
+			Name:           wc.Name,
+			Pattern:        wc.Pattern,
+			Remaining:      remaining,
+			Status:         "idle",
+			LastElapsed:    lastElapsed,
+			ChildCapacity:  cfg.WorkerParallelism,
+			ActiveChildren: 0,
 		})
 	}
 
