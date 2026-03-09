@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/rahulvramesh/ralph/state"
 )
 
 type childTaskResult struct {
@@ -13,18 +15,26 @@ type childTaskResult struct {
 	exitCode  int
 	err       error
 	completed []string
+	partial   []string
 }
 
-// runChildBatch launches one child agent per item, up to the configured worker
-// parallelism, and lets the parent reconcile checklist changes.
-func (w *Worker) runChildBatch(
+type acceptedBatch struct {
+	completed []state.BufferedResult
+	partial   []state.BufferedResult
+	output    string
+	exitCode  int
+}
+
+// collectChildBatch launches one child agent per item and returns the accepted
+// completed/partial result buffers without mutating the checklist.
+func (w *Worker) collectChildBatch(
 	ctx context.Context,
 	iteration int,
 	items []ChecklistItem,
 	partialItems []ChecklistItem,
-) (completed int, output string, exitCode int, err error) {
+) (acceptedBatch, error) {
 	if len(items) == 0 {
-		return 0, "", 0, nil
+		return acceptedBatch{}, nil
 	}
 
 	parallelism := w.Config.WorkerParallelism
@@ -88,6 +98,7 @@ func (w *Worker) runChildBatch(
 
 			if parsed, parseErr := ParseChildResult(childOutput); parseErr == nil {
 				result.completed = parsed.CompletedItems
+				result.partial = parsed.PartialItems
 			} else if runErr == nil && childExit == 0 {
 				result.err = parseErr
 				result.exitCode = -1
@@ -102,9 +113,10 @@ func (w *Worker) runChildBatch(
 		close(results)
 	}()
 
+	var batch acceptedBatch
 	var outputs strings.Builder
-	exitCode = 0
-	completedPaths := make([]string, 0, len(items))
+	exitCode := 0
+	var err error
 
 	for result := range results {
 		if outputs.Len() > 0 {
@@ -113,8 +125,23 @@ func (w *Worker) runChildBatch(
 		outputs.WriteString(result.output)
 
 		if len(result.completed) > 0 {
-			completed += len(result.completed)
-			completedPaths = append(completedPaths, result.completed...)
+			for _, path := range result.completed {
+				batch.completed = append(batch.completed, state.BufferedResult{
+					Path:       path,
+					Complete:   true,
+					Generation: 0,
+				})
+			}
+		}
+
+		if len(result.partial) > 0 {
+			for _, path := range result.partial {
+				batch.partial = append(batch.partial, state.BufferedResult{
+					Path:       path,
+					Complete:   false,
+					Generation: 0,
+				})
+			}
 		}
 
 		if result.err != nil && err == nil {
@@ -125,13 +152,33 @@ func (w *Worker) runChildBatch(
 		}
 	}
 
-	if len(completedPaths) > 0 && err == nil && exitCode == 0 {
+	w.setActiveChildren(0)
+
+	batch.output = outputs.String()
+	batch.exitCode = exitCode
+	return batch, err
+}
+
+// runChildBatch launches one child agent per item, up to the configured worker
+// parallelism, and lets the parent reconcile checklist changes.
+func (w *Worker) runChildBatch(
+	ctx context.Context,
+	iteration int,
+	items []ChecklistItem,
+	partialItems []ChecklistItem,
+) (completed int, output string, exitCode int, err error) {
+	batch, err := w.collectChildBatch(ctx, iteration, items, partialItems)
+	completedPaths := make([]string, 0, len(batch.completed))
+	for _, result := range batch.completed {
+		completed++
+		completedPaths = append(completedPaths, result.Path)
+	}
+
+	if len(completedPaths) > 0 && err == nil && batch.exitCode == 0 {
 		if markErr := MarkCompletedPaths(w.Config.Checklist, completedPaths); markErr != nil && err == nil {
 			err = markErr
 		}
 	}
 
-	w.setActiveChildren(0)
-
-	return completed, outputs.String(), exitCode, err
+	return completed, batch.output, batch.exitCode, err
 }
