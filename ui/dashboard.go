@@ -32,6 +32,10 @@ type WorkerInfo struct {
 	LastElapsed string // "7m23s"
 	ActiveChildren int
 	ChildCapacity  int
+	Generation        int
+	BufferedCompleted int
+	BufferedPartial   int
+	ResetCount        int
 }
 
 func workerChildPoolLabel(info WorkerInfo) string {
@@ -39,6 +43,17 @@ func workerChildPoolLabel(info WorkerInfo) string {
 		return ""
 	}
 	return fmt.Sprintf("children %d/%d", info.ActiveChildren, info.ChildCapacity)
+}
+
+func workerGenerationLabel(info WorkerInfo) string {
+	if info.Generation <= 0 {
+		return ""
+	}
+	label := fmt.Sprintf("gen %d | buf %dc/%dp", info.Generation, info.BufferedCompleted, info.BufferedPartial)
+	if info.ResetCount > 0 {
+		label += fmt.Sprintf(" | resets %d", info.ResetCount)
+	}
+	return label
 }
 
 // boxWidth is the inner content width between the left and right border characters.
@@ -110,6 +125,9 @@ func PrintStatus(checklistPath string, workers []WorkerInfo) {
 			clr, label, name, colorReset, w.Remaining, statusStr)
 		if childLabel := workerChildPoolLabel(w); childLabel != "" {
 			content += " | " + childLabel
+		}
+		if generationLabel := workerGenerationLabel(w); generationLabel != "" {
+			content += " | " + generationLabel
 		}
 		printBoxLine(content, countVisibleLen(content))
 	}
