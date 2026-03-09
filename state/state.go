@@ -19,10 +19,12 @@ type IterationRecord struct {
 
 // WorkerState tracks the cumulative progress for a named worker.
 type WorkerState struct {
-	Iteration int               `json:"iteration"`
-	Completed int               `json:"completed"`
-	Skipped   int               `json:"skipped"`
-	History   []IterationRecord `json:"history"`
+	Iteration        int               `json:"iteration"`
+	Completed        int               `json:"completed"`
+	Skipped          int               `json:"skipped"`
+	History          []IterationRecord `json:"history"`
+	ParentGeneration int               `json:"parent_generation,omitempty"`
+	ClaimedFiles     map[string]string `json:"claimed_files,omitempty"`
 }
 
 // State is the top-level container persisted to the JSON state file.
