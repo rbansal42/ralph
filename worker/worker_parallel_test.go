@@ -20,6 +20,7 @@ type fakeParallelBackend struct {
 	currentCalls  int
 	maxConcurrent int
 	delay         time.Duration
+	failPaths     map[string]bool
 }
 
 func (b *fakeParallelBackend) Name() string { return "fake" }
@@ -62,6 +63,15 @@ func (b *fakeParallelBackend) RunPrompt(_ context.Context, promptFile string, _ 
 
 	if targetPath == "" {
 		return "", 1, fmt.Errorf("missing checklist item in prompt")
+	}
+
+	if b.failPaths[targetPath] {
+		output := fmt.Sprintf(
+			"%s{\"attempted\":[%q],\"completed\":[],\"files_changed\":[],\"checklist_lines\":[],\"failure_reason\":\"backend error\"}",
+			childResultMarker,
+			targetPath,
+		)
+		return output, 1, fmt.Errorf("backend error")
 	}
 
 	output := fmt.Sprintf(
@@ -144,5 +154,71 @@ func TestRunChildBatchRunsMultipleAgentsAndMarksChecklist(t *testing.T) {
 	}
 	if remaining != 0 {
 		t.Fatalf("remaining = %d, want 0", remaining)
+	}
+}
+
+func TestRunChildBatchDoesNotUpdateChecklistOnMixedFailure(t *testing.T) {
+	dir := t.TempDir()
+	checklistPath := filepath.Join(dir, "CHECKLIST.md")
+	basePrompt := filepath.Join(dir, "prompt.md")
+
+	if err := os.WriteFile(basePrompt, []byte("base instructions"), 0o644); err != nil {
+		t.Fatalf("WriteFile(prompt) error = %v", err)
+	}
+
+	raw := strings.Join([]string{
+		"- [~] app/Tasks/A.php — pending",
+		"- [~] app/Tasks/B.php — pending",
+		"",
+	}, "\n")
+	if err := os.WriteFile(checklistPath, []byte(raw), 0o644); err != nil {
+		t.Fatalf("WriteFile(checklist) error = %v", err)
+	}
+
+	backend := &fakeParallelBackend{
+		delay:     10 * time.Millisecond,
+		failPaths: map[string]bool{"app/Tasks/B.php": true},
+	}
+	worker := &Worker{
+		Num:          1,
+		Name:         "tasks",
+		Pattern:      "app/Tasks",
+		TotalWorkers: 1,
+		Backend:      backend,
+		Config: &config.Config{
+			Checklist:         checklistPath,
+			Prompt:            basePrompt,
+			Model:             "fake-model",
+			Workdir:           dir,
+			WorkerParallelism: 2,
+		},
+		State:      &state.State{},
+		GitMutex:   &sync.Mutex{},
+		StateMutex: &sync.Mutex{},
+		Shutdown:   &atomic.Bool{},
+	}
+
+	items, err := GetPending(checklistPath, "app/Tasks")
+	if err != nil {
+		t.Fatalf("GetPending() error = %v", err)
+	}
+
+	completed, _, exitCode, err := worker.runChildBatch(context.Background(), 1, items, nil)
+	if err == nil {
+		t.Fatal("runChildBatch() error = nil, want failure")
+	}
+	if exitCode == 0 {
+		t.Fatalf("exitCode = %d, want non-zero", exitCode)
+	}
+	if completed != 1 {
+		t.Fatalf("completed = %d, want 1 successful child before batch rejection", completed)
+	}
+
+	updated, readErr := os.ReadFile(checklistPath)
+	if readErr != nil {
+		t.Fatalf("ReadFile() error = %v", readErr)
+	}
+	if got := string(updated); got != raw {
+		t.Fatalf("checklist changed on mixed failure:\n%s", got)
 	}
 }

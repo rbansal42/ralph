@@ -125,7 +125,7 @@ func (w *Worker) runChildBatch(
 		}
 	}
 
-	if len(completedPaths) > 0 {
+	if len(completedPaths) > 0 && err == nil && exitCode == 0 {
 		if markErr := MarkCompletedPaths(w.Config.Checklist, completedPaths); markErr != nil && err == nil {
 			err = markErr
 		}
