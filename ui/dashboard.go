@@ -30,6 +30,15 @@ type WorkerInfo struct {
 	Remaining   int
 	Status      string // "idle", "running iter #3", "committing", etc.
 	LastElapsed string // "7m23s"
+	ActiveChildren int
+	ChildCapacity  int
+}
+
+func workerChildPoolLabel(info WorkerInfo) string {
+	if info.ChildCapacity <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("children %d/%d", info.ActiveChildren, info.ChildCapacity)
 }
 
 // boxWidth is the inner content width between the left and right border characters.
@@ -99,6 +108,9 @@ func PrintStatus(checklistPath string, workers []WorkerInfo) {
 
 		content := fmt.Sprintf("  %s%s %-6s%s: %3d remaining | %s",
 			clr, label, name, colorReset, w.Remaining, statusStr)
+		if childLabel := workerChildPoolLabel(w); childLabel != "" {
+			content += " | " + childLabel
+		}
 		printBoxLine(content, countVisibleLen(content))
 	}
 
