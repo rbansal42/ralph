@@ -39,6 +39,8 @@ type Worker struct {
 	ModifiedFiles map[string]bool // files modified by this worker (protected by GitMutex)
 	CurrentStatus string
 	StatusMutex   sync.RWMutex
+	ActiveChildren int
+	ChildrenMutex  sync.RWMutex
 }
 
 // logf writes a formatted log line to stdout.
@@ -60,6 +62,39 @@ func (w *Worker) GetStatus() string {
 	return w.CurrentStatus
 }
 
+// setActiveChildren updates the active child count in a thread-safe manner.
+func (w *Worker) setActiveChildren(n int) {
+	w.ChildrenMutex.Lock()
+	w.ActiveChildren = n
+	w.ChildrenMutex.Unlock()
+}
+
+// changeActiveChildren adjusts the active child count by delta.
+func (w *Worker) changeActiveChildren(delta int) {
+	w.ChildrenMutex.Lock()
+	w.ActiveChildren += delta
+	w.ChildrenMutex.Unlock()
+}
+
+// GetActiveChildren returns the current number of active child agents.
+func (w *Worker) GetActiveChildren() int {
+	w.ChildrenMutex.RLock()
+	defer w.ChildrenMutex.RUnlock()
+	return w.ActiveChildren
+}
+
+func shouldCommitIteration(exitCode int, runErr error) bool {
+	return exitCode == 0 && runErr == nil
+}
+
+func shouldRetryIteration(exitCode int, runErr error, completed int) bool {
+	return (exitCode != 0 || runErr != nil) && completed == 0
+}
+
+func shouldAbortIteration(exitCode int, runErr error, completed int) bool {
+	return (exitCode != 0 || runErr != nil) && completed > 0
+}
+
 // Run starts the worker loop. It blocks until all items are done, max
 // iterations reached, or shutdown is signaled via the Shutdown flag or
 // context cancellation.
@@ -71,7 +106,6 @@ func (w *Worker) Run(ctx context.Context) error {
 	startIter := w.State.GetWorkerIteration(w.Name)
 	w.StateMutex.Unlock()
 
-	logDir := "logs"
 	consecutiveStale := 0
 
 	for i := startIter + 1; i <= w.Config.MaxIterations; i++ {
@@ -125,25 +159,7 @@ func (w *Worker) Run(ctx context.Context) error {
 			partialItems, _ = DetectPartiallyCompleted(w.Config.Checklist, w.Pattern, w.State.RunStartCommit, workdir)
 		}
 
-		// Build the prompt file.
-		promptFile, err := BuildPrompt(
-			w.Config.Prompt,
-			w.Name,
-			w.Num,
-			w.TotalWorkers,
-			w.Pattern,
-			i,
-			items,
-			len(pending),
-			logDir,
-			partialItems,
-			w.Config.ParallelSubagents,
-		)
-		if err != nil {
-			return fmt.Errorf("[W%d %s] building prompt: %w", w.Num, w.Name, err)
-		}
-
-		// Run the AI agent with retry logic for failed iterations.
+		// Run the child batch with retry logic for failed iterations.
 		var output string
 		var exitCode int
 		var runErr error
@@ -168,7 +184,7 @@ func (w *Worker) Run(ctx context.Context) error {
 				w.Num, w.Name, i, len(items), len(pending))
 
 			startTime := time.Now()
-			output, exitCode, runErr = w.Backend.RunPrompt(ctx, promptFile, w.Config.Workdir, w.Config.Model)
+			completed, output, exitCode, runErr = w.runChildBatch(ctx, i, items, partialItems)
 			elapsed = time.Since(startTime)
 
 			if runErr != nil {
@@ -185,15 +201,13 @@ func (w *Worker) Run(ctx context.Context) error {
 				w.logf("[W%d %s] Permission issue resolved — will retry on next iteration\n", w.Num, w.Name)
 			}
 
-			// Count remaining items after the agent ran.
-			newRemaining, countErr := CountPending(w.Config.Checklist, w.Pattern)
-			if countErr != nil {
-				return fmt.Errorf("[W%d %s] counting remaining: %w", w.Num, w.Name, countErr)
+			if shouldAbortIteration(exitCode, runErr, completed) {
+				w.setStatus("error")
+				return fmt.Errorf("[W%d %s] iteration #%d had mixed success and failure; workspace left uncommitted for inspection", w.Num, w.Name, i)
 			}
-			completed = len(pending) - newRemaining
 
-			// Determine if iteration failed: non-zero exit or error, AND no items completed.
-			iterFailed := (exitCode != 0 || runErr != nil) && completed == 0
+			// Determine if iteration failed cleanly enough to retry.
+			iterFailed := shouldRetryIteration(exitCode, runErr, completed)
 			if !iterFailed || attempt >= w.Config.MaxRetries {
 				if iterFailed {
 					w.logf("[W%d %s] Iteration #%d: failed after %d retries\n",
@@ -231,11 +245,15 @@ func (w *Worker) Run(ctx context.Context) error {
 		}
 
 		// Commit any changes.
-		w.setStatus("committing")
-		commitMsg := fmt.Sprintf("ralph: W%d %s iter #%d — %d items completed", w.Num, w.Name, i, completed)
-		if commitErr := w.gitCommit(commitMsg); commitErr != nil {
-			w.logf("[W%d %s] Iteration #%d: git commit warning: %v\n", w.Num, w.Name, i, commitErr)
-			// Non-fatal — agent may not have produced changes.
+		if shouldCommitIteration(exitCode, runErr) {
+			w.setStatus("committing")
+			commitMsg := fmt.Sprintf("ralph: W%d %s iter #%d — %d items completed", w.Num, w.Name, i, completed)
+			if commitErr := w.gitCommit(commitMsg); commitErr != nil {
+				w.logf("[W%d %s] Iteration #%d: git commit warning: %v\n", w.Num, w.Name, i, commitErr)
+				// Non-fatal — agent may not have produced changes.
+			}
+		} else {
+			w.logf("[W%d %s] Iteration #%d: skipping git commit because batch did not finish cleanly\n", w.Num, w.Name, i)
 		}
 
 		// Update state under lock.
