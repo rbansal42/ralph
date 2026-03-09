@@ -27,9 +27,17 @@ type WorkerState struct {
 
 // State is the top-level container persisted to the JSON state file.
 type State struct {
-	StartedAt   string                  `json:"started_at"`
-	LastUpdated string                  `json:"last_updated"`
-	Workers     map[string]*WorkerState `json:"workers"`
+	StartedAt      string                  `json:"started_at"`
+	LastUpdated    string                  `json:"last_updated"`
+	RunStartCommit string                  `json:"run_start_commit,omitempty"`
+	Workers        map[string]*WorkerState `json:"workers"`
+}
+
+// SetRunStartCommit records the git HEAD at run start for partial completion detection.
+func (s *State) SetRunStartCommit(commit string) {
+	if s.RunStartCommit == "" {
+		s.RunStartCommit = commit
+	}
 }
 
 // Load reads state from a JSON file at path. If the file does not exist, an

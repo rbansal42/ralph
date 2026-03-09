@@ -3,6 +3,8 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -34,6 +36,13 @@ type TokenConfig struct {
 	Backend string `toml:"backend"` // "opencode" or "claude"; empty = applies to configured backend
 }
 
+// NotifyConfig defines notification settings.
+type NotifyConfig struct {
+	TelegramBotToken string   `toml:"telegram_bot_token"`
+	TelegramChatID   string   `toml:"telegram_chat_id"`
+	NotifyOn         []string `toml:"notify_on"` // "start", "complete", "error", "stall"
+}
+
 // WorkerConfig defines a named worker with a file-matching pattern.
 type WorkerConfig struct {
 	Name    string `toml:"name"`
@@ -42,19 +51,31 @@ type WorkerConfig struct {
 
 // Config holds the parsed ralph.toml configuration.
 type Config struct {
-	Backend           string         `toml:"backend"`
-	Checklist         string         `toml:"checklist"`
-	Prompt            string         `toml:"prompt"`
-	Model             string         `toml:"model"`
-	CooldownRaw       string         `toml:"cooldown"`
-	Cooldown          time.Duration  `toml:"-"`
-	MaxIterations     int            `toml:"max_iterations"`
-	ItemsPerIteration int            `toml:"items_per_iteration"`
-	StateFile         string         `toml:"state_file"`
-	Workdir           string         `toml:"workdir"`
-	ExternalDirs      []string       `toml:"external_dirs"`
-	Tokens            []TokenConfig  `toml:"token"`
-	Workers           []WorkerConfig `toml:"worker"`
+	Backend                string         `toml:"backend"`
+	Checklist              string         `toml:"checklist"`
+	Prompt                 string         `toml:"prompt"`
+	Model                  string         `toml:"model"`
+	CooldownRaw            string         `toml:"cooldown"`
+	Cooldown               time.Duration  `toml:"-"`
+	MaxRetries             int            `toml:"max_retries"`
+	RetryDelayRaw          string         `toml:"retry_delay"`
+	RetryDelay             time.Duration  `toml:"-"`
+	MaxIterations          int            `toml:"max_iterations"`
+	ItemsPerIteration      int            `toml:"items_per_iteration"`
+	Concurrency            int            `toml:"concurrency"`
+	MaxStaleIterations     int            `toml:"max_stale_iterations"`
+	AutoApprovePermissions bool           `toml:"auto_approve_permissions"`
+	StateFile              string         `toml:"state_file"`
+	Workdir                string         `toml:"workdir"`
+	ExternalDirs           []string       `toml:"external_dirs"`
+	Tokens                 []TokenConfig  `toml:"token"`
+	Workers                []WorkerConfig `toml:"worker"`
+	BudgetLimitRaw         string         `toml:"budget_limit"`       // optional, e.g. "50.00" USD
+	BudgetLimit            float64        `toml:"-"`                  // parsed budget limit in USD (0 = no limit)
+	BatchMode              string         `toml:"batch_mode"`         // "fixed" or "smart"
+	ComplexityBudget       int            `toml:"complexity_budget"`  // target complexity per iteration (smart mode)
+	ParallelSubagents      bool           `toml:"parallel_subagents"` // hint agent to use subagents for parallel item processing
+	Notify                 NotifyConfig   `toml:"notify"`
 }
 
 // Load reads a ralph.toml file at path and returns a validated Config.
@@ -65,11 +86,18 @@ func Load(path string) (*Config, error) {
 	}
 
 	cfg := &Config{
-		Backend:           "opencode",
-		CooldownRaw:       "10s",
-		MaxIterations:     80,
-		ItemsPerIteration: 5,
-		StateFile:         "ralph_state.json",
+		Backend:                "opencode",
+		CooldownRaw:            "10s",
+		MaxRetries:             2,
+		RetryDelayRaw:          "5s",
+		MaxIterations:          80,
+		ItemsPerIteration:      5,
+		Concurrency:            0,    // 0 = all workers in parallel (default)
+		MaxStaleIterations:     3,    // stop worker after 3 consecutive iterations with 0 completions (0 = disabled)
+		AutoApprovePermissions: true, // auto-approve permission blocks by default
+		StateFile:              "ralph_state.json",
+		BatchMode:              "fixed",
+		ComplexityBudget:       500,
 	}
 
 	if err := toml.Unmarshal(data, cfg); err != nil {
@@ -78,11 +106,36 @@ func Load(path string) (*Config, error) {
 
 	cfg.Model = ResolveModelAlias(cfg.Model)
 
+	// Default parallel_subagents to true when using opencode backend,
+	// unless explicitly set in the config file. We detect "not set" by
+	// checking if the raw TOML had the key — BurntSushi/toml leaves the
+	// zero value (false) when the key is absent. We use a separate check.
+	if !hasKey(data, "parallel_subagents") {
+		cfg.ParallelSubagents = (cfg.Backend == "opencode")
+	}
+
 	dur, err := time.ParseDuration(cfg.CooldownRaw)
 	if err != nil {
 		return nil, fmt.Errorf("parsing cooldown %q: %w", cfg.CooldownRaw, err)
 	}
 	cfg.Cooldown = dur
+
+	retryDur, err := time.ParseDuration(cfg.RetryDelayRaw)
+	if err != nil {
+		return nil, fmt.Errorf("parsing retry_delay %q: %w", cfg.RetryDelayRaw, err)
+	}
+	cfg.RetryDelay = retryDur
+
+	if cfg.BudgetLimitRaw != "" {
+		budget, err := strconv.ParseFloat(cfg.BudgetLimitRaw, 64)
+		if err != nil {
+			return nil, fmt.Errorf("parsing budget_limit %q: must be a number (e.g. \"50.00\"): %w", cfg.BudgetLimitRaw, err)
+		}
+		if budget < 0 {
+			return nil, fmt.Errorf("budget_limit must be >= 0, got %q", cfg.BudgetLimitRaw)
+		}
+		cfg.BudgetLimit = budget
+	}
 
 	if err := validate(cfg); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
@@ -106,6 +159,14 @@ func AppendToken(path string, name, key string) error {
 	}
 
 	return nil
+}
+
+// hasKey does a simple check for whether a TOML key exists in raw data.
+// This avoids needing a separate "was this set?" bool for every field.
+func hasKey(data []byte, key string) bool {
+	// Look for the key as a line-start token: "key = " or "key="
+	s := string(data)
+	return strings.Contains(s, key+" =") || strings.Contains(s, key+"=")
 }
 
 // validate checks that cfg satisfies all required constraints.
@@ -133,6 +194,26 @@ func validate(cfg *Config) error {
 		if w.Pattern == "" {
 			return fmt.Errorf("worker[%d] (%s): pattern must be set", i, w.Name)
 		}
+	}
+
+	if cfg.MaxRetries < 0 {
+		return fmt.Errorf("max_retries must be >= 0, got %d", cfg.MaxRetries)
+	}
+
+	if cfg.Concurrency < 0 {
+		return fmt.Errorf("concurrency must be >= 0 (0 = all workers in parallel), got %d", cfg.Concurrency)
+	}
+
+	if cfg.MaxStaleIterations < 0 {
+		return fmt.Errorf("max_stale_iterations must be >= 0 (0 = disabled), got %d", cfg.MaxStaleIterations)
+	}
+
+	if cfg.BatchMode != "fixed" && cfg.BatchMode != "smart" {
+		return fmt.Errorf("batch_mode must be \"fixed\" or \"smart\", got %q", cfg.BatchMode)
+	}
+
+	if cfg.ComplexityBudget <= 0 {
+		return fmt.Errorf("complexity_budget must be > 0, got %d", cfg.ComplexityBudget)
 	}
 
 	return nil

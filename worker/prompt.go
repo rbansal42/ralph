@@ -9,6 +9,8 @@ import (
 
 // BuildPrompt reads the base prompt template, appends iteration-specific context,
 // writes to a deterministic file in logDir, and returns the file path.
+// When useSubagents is true and there are multiple items, a hint is added
+// instructing the agent to use subagents for parallel execution of independent items.
 func BuildPrompt(
 	basePromptPath string,
 	workerName string,
@@ -19,6 +21,8 @@ func BuildPrompt(
 	items []ChecklistItem,
 	totalRemaining int,
 	logDir string,
+	partialItems []ChecklistItem,
+	useSubagents bool,
 ) (string, error) {
 	base, err := os.ReadFile(basePromptPath)
 	if err != nil {
@@ -51,6 +55,26 @@ func BuildPrompt(
 	for _, item := range items {
 		b.WriteString(item.Line)
 		b.WriteString("\n")
+	}
+
+	// Partial completion warnings.
+	if len(partialItems) > 0 {
+		b.WriteString("\n### PARTIAL COMPLETIONS DETECTED\n")
+		b.WriteString("The following items have already been modified in a previous run but are still marked as [~].\n")
+		b.WriteString("Check existing changes before re-implementing from scratch:\n\n")
+		for _, item := range partialItems {
+			b.WriteString(fmt.Sprintf("  - %s (file already modified)\n", item.Path))
+		}
+		b.WriteString("\n")
+	}
+
+	// Subagent parallelism hint.
+	if useSubagents && len(items) > 1 {
+		b.WriteString("\n### PARALLEL EXECUTION\n")
+		b.WriteString("You have multiple independent items. Use subagents (Task tool) to work on ")
+		b.WriteString("items that touch different files in parallel. Each subagent should handle one ")
+		b.WriteString("item completely — read the file, implement the change, and update the checklist.\n")
+		b.WriteString("Only process items sequentially if they share dependencies or modify the same file.\n")
 	}
 
 	// Instructions.

@@ -4,9 +4,69 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
+	"time"
 )
+
+// checklistCache provides a time-based cache for parsed checklist data.
+// This avoids re-reading and re-parsing the checklist file on every TUI tick
+// (500ms refresh × N workers = many reads/sec).
+var checklistCache struct {
+	mu      sync.Mutex
+	path    string
+	items   []ChecklistItem
+	modTime time.Time
+	readAt  time.Time
+	ttl     time.Duration
+}
+
+func init() {
+	checklistCache.ttl = 2 * time.Second
+}
+
+// cachedParseChecklist returns parsed checklist items, using a cache with TTL.
+// If the file hasn't been modified and the cache is fresh, returns cached data.
+func cachedParseChecklist(path string) ([]ChecklistItem, error) {
+	checklistCache.mu.Lock()
+	defer checklistCache.mu.Unlock()
+
+	now := time.Now()
+
+	// Check if cache is still valid
+	if checklistCache.path == path && now.Sub(checklistCache.readAt) < checklistCache.ttl {
+		// Cache is fresh enough — check if file was modified
+		info, err := os.Stat(path)
+		if err == nil && info.ModTime().Equal(checklistCache.modTime) {
+			// Return a copy to prevent mutation
+			result := make([]ChecklistItem, len(checklistCache.items))
+			copy(result, checklistCache.items)
+			return result, nil
+		}
+	}
+
+	// Cache miss — parse fresh
+	items, err := parseChecklist(path)
+	if err != nil {
+		return nil, err
+	}
+
+	// Update cache
+	info, _ := os.Stat(path)
+	checklistCache.path = path
+	checklistCache.items = items
+	checklistCache.readAt = now
+	if info != nil {
+		checklistCache.modTime = info.ModTime()
+	}
+
+	// Return a copy
+	result := make([]ChecklistItem, len(items))
+	copy(result, items)
+	return result, nil
+}
 
 // checklistRe matches lines like:
 //
@@ -75,7 +135,7 @@ func matchesPattern(line string, pattern string) bool {
 // matches the given pattern. Pattern is pipe-delimited; an item matches if its
 // Line contains ANY of the segments.
 func GetPending(checklistPath string, pattern string) ([]ChecklistItem, error) {
-	items, err := parseChecklist(checklistPath)
+	items, err := cachedParseChecklist(checklistPath)
 	if err != nil {
 		return nil, err
 	}
@@ -92,7 +152,7 @@ func GetPending(checklistPath string, pattern string) ([]ChecklistItem, error) {
 // CountByStatus reads the file and returns counts keyed by status character.
 // The returned map always contains keys "x", "s", and "~" (defaulting to 0).
 func CountByStatus(checklistPath string) (map[string]int, error) {
-	items, err := parseChecklist(checklistPath)
+	items, err := cachedParseChecklist(checklistPath)
 	if err != nil {
 		return nil, err
 	}
@@ -111,4 +171,155 @@ func CountPending(checklistPath string, pattern string) (int, error) {
 		return 0, err
 	}
 	return len(pending), nil
+}
+
+// DetectOverlaps checks all worker patterns against the checklist and returns
+// pairs of workers that would match the same items. This is a pre-run validation.
+func DetectOverlaps(checklistPath string, workers []struct{ Name, Pattern string }) []string {
+	items, err := cachedParseChecklist(checklistPath)
+	if err != nil {
+		return nil
+	}
+
+	// Build map: item path -> list of worker names that match it
+	pathWorkers := make(map[string][]string)
+	for _, item := range items {
+		if item.Status != "~" {
+			continue // only check pending items
+		}
+		for _, w := range workers {
+			if matchesPattern(item.Line, w.Pattern) {
+				pathWorkers[item.Path] = append(pathWorkers[item.Path], w.Name)
+			}
+		}
+	}
+
+	// Find items matched by more than one worker
+	var warnings []string
+	seen := make(map[string]bool)
+	for path, names := range pathWorkers {
+		if len(names) > 1 {
+			key := strings.Join(names, "+")
+			if !seen[key] {
+				seen[key] = true
+				warnings = append(warnings, fmt.Sprintf(
+					"workers %s overlap on %d+ items (e.g. %s)",
+					strings.Join(names, ", "), countOverlap(pathWorkers, names), path))
+			}
+		}
+	}
+	return warnings
+}
+
+// changedFilesCache caches git diff results to avoid running a subprocess
+// on every iteration for every worker. The cache is keyed by startCommit
+// and invalidated after a short TTL.
+var changedFilesCache struct {
+	mu          sync.Mutex
+	startCommit string
+	workdir     string
+	files       map[string]bool
+	readAt      time.Time
+	ttl         time.Duration
+}
+
+func init() {
+	changedFilesCache.ttl = 5 * time.Second
+}
+
+// getChangedFiles returns the set of files changed since startCommit,
+// using a cache to avoid repeated git subprocess calls.
+func getChangedFiles(startCommit, workdir string) map[string]bool {
+	changedFilesCache.mu.Lock()
+	defer changedFilesCache.mu.Unlock()
+
+	now := time.Now()
+	if changedFilesCache.startCommit == startCommit &&
+		changedFilesCache.workdir == workdir &&
+		now.Sub(changedFilesCache.readAt) < changedFilesCache.ttl {
+		return changedFilesCache.files
+	}
+
+	// Cache miss — run git diff
+	cmd := exec.Command("git", "diff", "--name-only", startCommit+"..HEAD")
+	if workdir != "" {
+		cmd.Dir = workdir
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+
+	files := make(map[string]bool)
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line != "" {
+			files[line] = true
+		}
+	}
+
+	changedFilesCache.startCommit = startCommit
+	changedFilesCache.workdir = workdir
+	changedFilesCache.files = files
+	changedFilesCache.readAt = now
+	return files
+}
+
+// DetectPartiallyCompleted checks pending items against git diff to find files
+// that were modified since startCommit but are still marked as [~].
+// Returns the items that appear partially completed.
+func DetectPartiallyCompleted(checklistPath, pattern, startCommit, workdir string) ([]ChecklistItem, error) {
+	if startCommit == "" {
+		return nil, nil
+	}
+
+	changedFiles := getChangedFiles(startCommit, workdir)
+	if len(changedFiles) == 0 {
+		return nil, nil
+	}
+
+	// Check which pending items have their file already modified.
+	pending, err := GetPending(checklistPath, pattern)
+	if err != nil {
+		return nil, err
+	}
+
+	var partial []ChecklistItem
+	for _, item := range pending {
+		if changedFiles[item.Path] {
+			partial = append(partial, item)
+		}
+	}
+	return partial, nil
+}
+
+// countOverlap counts how many paths are shared by all the given worker names.
+func countOverlap(pathWorkers map[string][]string, names []string) int {
+	nameSet := make(map[string]bool)
+	for _, n := range names {
+		nameSet[n] = true
+	}
+	count := 0
+	for _, workers := range pathWorkers {
+		if len(workers) < len(names) {
+			continue
+		}
+		allMatch := true
+		for _, n := range names {
+			found := false
+			for _, w := range workers {
+				if w == n {
+					found = true
+					break
+				}
+			}
+			allMatch = found
+			if !allMatch {
+				break
+			}
+		}
+		if allMatch {
+			count++
+		}
+	}
+	return count
 }
