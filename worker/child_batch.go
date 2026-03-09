@@ -104,6 +104,7 @@ func (w *Worker) runChildBatch(
 
 	var outputs strings.Builder
 	exitCode = 0
+	completedPaths := make([]string, 0, len(items))
 
 	for result := range results {
 		if outputs.Len() > 0 {
@@ -112,10 +113,8 @@ func (w *Worker) runChildBatch(
 		outputs.WriteString(result.output)
 
 		if len(result.completed) > 0 {
-			if markErr := MarkCompletedPaths(w.Config.Checklist, result.completed); markErr != nil && err == nil {
-				err = markErr
-			}
 			completed += len(result.completed)
+			completedPaths = append(completedPaths, result.completed...)
 		}
 
 		if result.err != nil && err == nil {
@@ -123,6 +122,12 @@ func (w *Worker) runChildBatch(
 		}
 		if result.exitCode != 0 && exitCode == 0 {
 			exitCode = result.exitCode
+		}
+	}
+
+	if len(completedPaths) > 0 {
+		if markErr := MarkCompletedPaths(w.Config.Checklist, completedPaths); markErr != nil && err == nil {
+			err = markErr
 		}
 	}
 
