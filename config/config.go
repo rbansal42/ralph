@@ -75,6 +75,9 @@ type Config struct {
 	BatchMode              string         `toml:"batch_mode"`         // "fixed" or "smart"
 	ComplexityBudget       int            `toml:"complexity_budget"`  // target complexity per iteration (smart mode)
 	ParallelSubagents      bool           `toml:"parallel_subagents"` // hint agent to use subagents for parallel item processing
+	WorkerParallelism      int            `toml:"worker_parallelism"`
+	ParentResetAfterRuns   int            `toml:"parent_reset_after_runs"`
+	CommitBatchSize        int            `toml:"commit_batch_size"`
 	Notify                 NotifyConfig   `toml:"notify"`
 }
 
@@ -98,6 +101,9 @@ func Load(path string) (*Config, error) {
 		StateFile:              "ralph_state.json",
 		BatchMode:              "fixed",
 		ComplexityBudget:       500,
+		WorkerParallelism:      2,
+		ParentResetAfterRuns:   25,
+		CommitBatchSize:        3,
 	}
 
 	if err := toml.Unmarshal(data, cfg); err != nil {
@@ -214,6 +220,18 @@ func validate(cfg *Config) error {
 
 	if cfg.ComplexityBudget <= 0 {
 		return fmt.Errorf("complexity_budget must be > 0, got %d", cfg.ComplexityBudget)
+	}
+
+	if cfg.WorkerParallelism <= 0 {
+		return fmt.Errorf("worker_parallelism must be > 0, got %d", cfg.WorkerParallelism)
+	}
+
+	if cfg.ParentResetAfterRuns <= 0 {
+		return fmt.Errorf("parent_reset_after_runs must be > 0, got %d", cfg.ParentResetAfterRuns)
+	}
+
+	if cfg.CommitBatchSize <= 0 {
+		return fmt.Errorf("commit_batch_size must be > 0, got %d", cfg.CommitBatchSize)
 	}
 
 	return nil
