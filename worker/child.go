@@ -14,6 +14,7 @@ var ErrMissingChildResult = errors.New("missing child result marker")
 type ChildResult struct {
 	AttemptedItems []string `json:"attempted,omitempty"`
 	CompletedItems []string `json:"completed,omitempty"`
+	PartialItems   []string `json:"partial,omitempty"`
 	FilesChanged   []string `json:"files_changed,omitempty"`
 	ChecklistLines []int    `json:"checklist_lines,omitempty"`
 	FailureReason  string   `json:"failure_reason,omitempty"`
