@@ -95,6 +95,10 @@ func shouldAbortIteration(exitCode int, runErr error, completed int) bool {
 	return (exitCode != 0 || runErr != nil) && completed > 0
 }
 
+func shouldResetGeneration(currentRuns int, threshold int) bool {
+	return threshold > 0 && currentRuns >= threshold
+}
+
 // Run starts the worker loop. It blocks until all items are done, max
 // iterations reached, or shutdown is signaled via the Shutdown flag or
 // context cancellation.
