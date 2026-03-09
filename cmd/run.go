@@ -463,11 +463,13 @@ func buildWorkerInfos(cfg *config.Config) []ui.WorkerInfo {
 	for i, wc := range cfg.Workers {
 		remaining, _ := worker.CountPending(cfg.Checklist, wc.Pattern)
 		infos = append(infos, ui.WorkerInfo{
-			Num:       i + 1,
-			Name:      wc.Name,
-			Pattern:   wc.Pattern,
-			Remaining: remaining,
-			Status:    "waiting",
+			Num:            i + 1,
+			Name:           wc.Name,
+			Pattern:        wc.Pattern,
+			Remaining:      remaining,
+			Status:         "waiting",
+			ChildCapacity:  cfg.WorkerParallelism,
+			ActiveChildren: 0,
 		})
 	}
 	return infos
@@ -479,11 +481,13 @@ func buildLiveWorkerInfos(cfg *config.Config, workers []*worker.Worker) []ui.Wor
 	for _, w := range workers {
 		remaining, _ := worker.CountPending(cfg.Checklist, w.Pattern)
 		infos = append(infos, ui.WorkerInfo{
-			Num:       w.Num,
-			Name:      w.Name,
-			Pattern:   w.Pattern,
-			Remaining: remaining,
-			Status:    w.GetStatus(),
+			Num:            w.Num,
+			Name:           w.Name,
+			Pattern:        w.Pattern,
+			Remaining:      remaining,
+			Status:         w.GetStatus(),
+			ChildCapacity:  cfg.WorkerParallelism,
+			ActiveChildren: w.GetActiveChildren(),
 		})
 	}
 	return infos

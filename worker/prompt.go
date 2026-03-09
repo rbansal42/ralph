@@ -73,7 +73,7 @@ func BuildPrompt(
 		b.WriteString("\n### PARALLEL EXECUTION\n")
 		b.WriteString("You have multiple independent items. Use subagents (Task tool) to work on ")
 		b.WriteString("items that touch different files in parallel. Each subagent should handle one ")
-		b.WriteString("item completely — read the file, implement the change, and update the checklist.\n")
+		b.WriteString("item completely — read the file, implement the change, and return a result summary.\n")
 		b.WriteString("Only process items sequentially if they share dependencies or modify the same file.\n")
 	}
 
@@ -83,9 +83,11 @@ func BuildPrompt(
 	b.WriteString("1. Read the ENTIRE source file\n")
 	b.WriteString("2. Read any existing equivalent\n")
 	b.WriteString("3. Implement COMPLETE business logic\n")
-	b.WriteString("4. Update the checklist marking completed items as [x]\n")
+	b.WriteString("4. Do NOT update the checklist directly. The parent worker will reconcile results.\n")
 	b.WriteString("\n**DO NOT run git add or git commit.** The runner handles commits externally.\n")
-	b.WriteString("\nOutput RALPH_SUMMARY at the end.\n")
+	b.WriteString("\nOutput RALPH_CHILD_RESULT as one JSON object on a single line.\n")
+	b.WriteString("Include keys: attempted, completed, files_changed, checklist_lines, failure_reason.\n")
+	b.WriteString("Set failure_reason to an empty string when the task succeeds.\n")
 
 	// Write to deterministic path for debugging.
 	outPath := filepath.Join(logDir, fmt.Sprintf("w%d_prompt_%04d.md", workerNum, iteration))

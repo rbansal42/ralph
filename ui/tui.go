@@ -161,7 +161,11 @@ func (d *InlineDashboard) render() {
 		}
 
 		remaining := s.dim.Render(fmt.Sprintf("%3d remaining", w.Remaining))
-		status := s.dim.Render(w.Status)
+		statusText := w.Status
+		if childLabel := workerChildPoolLabel(w); childLabel != "" {
+			statusText += " | " + childLabel
+		}
+		status := s.dim.Render(statusText)
 
 		b.WriteString(fmt.Sprintf("%s %s %s | %s\n", label, statusIcon, remaining, status))
 	}
