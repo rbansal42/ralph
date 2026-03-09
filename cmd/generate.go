@@ -175,6 +175,9 @@ func runGenerate(cmd *cobra.Command, args []string) error {
 	// 7. Items per iteration
 	itemsPerIteration := promptInt(reader, "Items per iteration?", 5)
 
+	// 7b. Concurrency
+	concurrency := promptInt(reader, "Max workers to run in parallel? (0 = all)", 0)
+
 	// 8. Write ralph.toml
 	var toml strings.Builder
 	fmt.Fprintf(&toml, "backend = %q\n", backendName)
@@ -182,6 +185,8 @@ func runGenerate(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(&toml, "prompt = %q\n", promptPath)
 	fmt.Fprintf(&toml, "model = %q\n", model)
 	fmt.Fprintf(&toml, "items_per_iteration = %d\n", itemsPerIteration)
+	fmt.Fprintf(&toml, "concurrency = %d\n", concurrency)
+	fmt.Fprintf(&toml, "auto_approve_permissions = true\n")
 	fmt.Fprintf(&toml, "\n")
 
 	for _, w := range workers {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"sync"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/rahulvramesh/ralph/backend"
 	"github.com/rahulvramesh/ralph/config"
+	"github.com/rahulvramesh/ralph/notify"
 	"github.com/rahulvramesh/ralph/permission"
 	"github.com/rahulvramesh/ralph/state"
 	"github.com/rahulvramesh/ralph/ui"
@@ -22,10 +24,13 @@ import (
 )
 
 var (
-	flagModel   string
-	flagWorker  int
-	flagDryRun  bool
-	flagBackend string
+	flagModel         string
+	flagWorker        int
+	flagDryRun        bool
+	flagBackend       string
+	flagConcurrency   int
+	flagNoAutoApprove bool
+	flagNoTUI         bool
 )
 
 var runCmd = &cobra.Command{
@@ -40,6 +45,9 @@ func init() {
 	runCmd.Flags().IntVar(&flagWorker, "worker", 0, "run only worker N (1-based)")
 	runCmd.Flags().BoolVar(&flagDryRun, "dry-run", false, "show what each worker would do without executing")
 	runCmd.Flags().StringVar(&flagBackend, "backend", "", "override backend from config")
+	runCmd.Flags().IntVar(&flagConcurrency, "concurrency", -1, "max workers to run in parallel (0 = all, 1 = sequential)")
+	runCmd.Flags().BoolVar(&flagNoAutoApprove, "no-auto-approve", false, "disable auto-approval of permission blocks (prompt interactively instead)")
+	runCmd.Flags().BoolVar(&flagNoTUI, "no-tui", false, "disable live TUI dashboard (use text-based output)")
 }
 
 func runRun(cmd *cobra.Command, args []string) error {
@@ -55,6 +63,12 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 	if flagBackend != "" {
 		cfg.Backend = flagBackend
+	}
+	if flagConcurrency >= 0 {
+		cfg.Concurrency = flagConcurrency
+	}
+	if flagNoAutoApprove {
+		cfg.AutoApprovePermissions = false
 	}
 
 	// 3. Create backend
@@ -74,6 +88,16 @@ func runRun(cmd *cobra.Command, args []string) error {
 	if flagDryRun {
 		fmt.Println()
 		fmt.Println("--- DRY RUN ---")
+		if cfg.Concurrency == 0 {
+			fmt.Printf("Concurrency: all workers in parallel\n")
+		} else {
+			fmt.Printf("Concurrency: %d worker(s) at a time\n", cfg.Concurrency)
+		}
+		if cfg.AutoApprovePermissions {
+			fmt.Println("Permissions: auto-approve enabled")
+		} else {
+			fmt.Println("Permissions: interactive approval")
+		}
 		for i, wc := range cfg.Workers {
 			pending, err := worker.GetPending(cfg.Checklist, wc.Pattern)
 			if err != nil {
@@ -94,6 +118,12 @@ func runRun(cmd *cobra.Command, args []string) error {
 		}
 		return nil
 	}
+
+	// Set up notifications
+	notifier := notify.New(cfg.Notify.TelegramBotToken, cfg.Notify.TelegramChatID, cfg.Notify.NotifyOn)
+
+	// Send start notification
+	notifier.Send(notify.EventStart, fmt.Sprintf("*Ralph started*\nWorkers: %d\nBackend: %s\nModel: %s", len(cfg.Workers), cfg.Backend, cfg.Model))
 
 	// 7. Set up permissions (auto-create opencode.json if needed)
 	fmt.Print("Setting up permissions... ")
@@ -166,6 +196,15 @@ func runRun(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("loading state: %w", err)
 	}
 
+	// Record git HEAD for partial completion detection on resume.
+	headCmd := exec.Command("git", "rev-parse", "HEAD")
+	if cfg.Workdir != "" {
+		headCmd.Dir = cfg.Workdir
+	}
+	if headOut, err := headCmd.Output(); err == nil {
+		st.SetRunStartCommit(strings.TrimSpace(string(headOut)))
+	}
+
 	// 9. Create log dir
 	if err := os.MkdirAll("logs/ralph", 0755); err != nil {
 		return fmt.Errorf("creating log directory: %w", err)
@@ -197,13 +236,31 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 
 	// Permission handler — called when a worker detects a permission block.
-	// Prompts the user, adds the directory to opencode.json, and returns true if resolved.
+	// In auto-approve mode (default), automatically adds the directory to
+	// opencode.json and retries. Otherwise prompts the user interactively.
 	permHandler := func(output string) bool {
 		blockedPath := permission.DetectPermissionBlock(output)
 		if blockedPath == "" {
 			return false
 		}
 
+		workdir := cfg.Workdir
+		if workdir == "" {
+			workdir = "."
+		}
+
+		if cfg.AutoApprovePermissions {
+			// Auto-approve: add the directory without prompting.
+			fmt.Printf("\n  Permission block detected for: %s — auto-approving\n", blockedPath)
+			if err := permission.AddExternalDir(workdir, blockedPath); err != nil {
+				fmt.Fprintf(os.Stderr, "  Failed to update permissions: %v\n", err)
+				return false
+			}
+			fmt.Printf("  Added %s to opencode.json — will retry\n", blockedPath)
+			return true
+		}
+
+		// Interactive mode: ask the user.
 		fmt.Printf("\n  Permission block detected for: %s\n", blockedPath)
 		fmt.Print("  Allow access to this directory? [Y/n]: ")
 		reader := bufio.NewReader(os.Stdin)
@@ -211,10 +268,6 @@ func runRun(cmd *cobra.Command, args []string) error {
 		answer = strings.TrimSpace(strings.ToLower(answer))
 
 		if answer == "" || answer == "y" || answer == "yes" {
-			workdir := cfg.Workdir
-			if workdir == "" {
-				workdir = "."
-			}
 			if err := permission.AddExternalDir(workdir, blockedPath); err != nil {
 				fmt.Fprintf(os.Stderr, "  Failed to update permissions: %v\n", err)
 				return false
@@ -228,6 +281,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 
 	// Build workers
+	globalUsage := &worker.TokenUsage{}
 	workers := make([]*worker.Worker, 0, len(cfg.Workers))
 	for i, wc := range cfg.Workers {
 		w := &worker.Worker{
@@ -243,8 +297,26 @@ func runRun(cmd *cobra.Command, args []string) error {
 			Shutdown:     &shutdown,
 			TokenManager: tokenMgr,
 			PermHandler:  permHandler,
+			Notifier:     notifier,
+			Usage:        &worker.TokenUsage{},
+			GlobalUsage:  globalUsage,
 		}
 		workers = append(workers, w)
+	}
+
+	// Pre-run overlap detection
+	workerPairs := make([]struct{ Name, Pattern string }, len(cfg.Workers))
+	for i, wc := range cfg.Workers {
+		workerPairs[i] = struct{ Name, Pattern string }{wc.Name, wc.Pattern}
+	}
+	if overlaps := worker.DetectOverlaps(cfg.Checklist, workerPairs); len(overlaps) > 0 {
+		fmt.Println()
+		fmt.Printf("%sWarning: worker pattern overlaps detected:%s\n", "\033[33m", "\033[0m")
+		for _, o := range overlaps {
+			fmt.Printf("  - %s\n", o)
+		}
+		fmt.Println("  Items in overlap zones may be processed by multiple workers.")
+		fmt.Println()
 	}
 
 	// 13. Run workers
@@ -258,42 +330,106 @@ func runRun(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("worker %d failed: %w", flagWorker, err)
 		}
 	} else {
-		var wg sync.WaitGroup
-
-		for _, w := range workers {
-			wg.Add(1)
-			go func(w *worker.Worker) {
-				defer wg.Done()
-				if err := w.Run(ctx); err != nil {
-					fmt.Fprintf(os.Stderr, "[W%d %s] Error: %v\n", w.Num, w.Name, err)
-				}
-			}(w)
+		// Determine concurrency limit.
+		// 0 (default) = all workers in parallel; otherwise cap at worker count.
+		maxParallel := len(workers)
+		if cfg.Concurrency > 0 {
+			maxParallel = cfg.Concurrency
+			if maxParallel > len(workers) {
+				maxParallel = len(workers)
+			}
 		}
 
-		// 14. Progress ticker
-		ticker := time.NewTicker(60 * time.Second)
+		if maxParallel == 1 {
+			fmt.Printf("\nRunning %d workers sequentially\n\n", len(workers))
+		} else if maxParallel < len(workers) {
+			fmt.Printf("\nRunning %d workers with concurrency %d\n\n", len(workers), maxParallel)
+		} else {
+			fmt.Printf("\nRunning %d workers in parallel\n\n", len(workers))
+		}
+
+		// Worker queue: workers are fed in definition order through a channel.
+		// maxParallel consumer goroutines pull from the queue, guaranteeing
+		// that workers start in order (W1 before W2 before W3, etc.).
+		workCh := make(chan *worker.Worker)
+		var wg sync.WaitGroup
+
+		// Launch consumer goroutines (pool of maxParallel).
+		for i := 0; i < maxParallel; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for w := range workCh {
+					fmt.Printf("[W%d %s] Started\n", w.Num, w.Name)
+					if err := w.Run(ctx); err != nil {
+						fmt.Fprintf(os.Stderr, "[W%d %s] Error: %v\n", w.Num, w.Name, err)
+					}
+				}
+			}()
+		}
+
+		// Feed workers in order — blocks when all consumers are busy,
+		// so the next worker starts only when a slot opens up.
+		go func() {
+			for _, w := range workers {
+				workCh <- w
+			}
+			close(workCh)
+		}()
+
+		// 14. Live TUI or text-based progress
 		done := make(chan struct{})
 		go func() {
 			wg.Wait()
 			close(done)
 		}()
 
-		go func() {
-			for {
-				select {
-				case <-ticker.C:
-					infos := buildLiveWorkerInfos(cfg, workers)
-					fmt.Println()
-					ui.PrintStatus(cfg.Checklist, infos)
-				case <-done:
-					ticker.Stop()
-					return
-				}
-			}
-		}()
+		useTUI := !flagNoTUI && isTerminal()
 
-		// 15. Wait for all workers
-		<-done
+		if useTUI {
+			// Launch inline dashboard (rclone-style: logs scroll above,
+			// status block redraws at bottom via ANSI cursor movement).
+			getWorkers := func() []ui.WorkerInfo {
+				return buildLiveWorkerInfos(cfg, workers)
+			}
+			getUsage := func() float64 {
+				_, _, _, cost := globalUsage.Snapshot()
+				return cost
+			}
+
+			tuiCfg := ui.TUIConfig{
+				Backend:     cfg.Backend,
+				Model:       cfg.Model,
+				Concurrency: cfg.Concurrency,
+				Checklist:   cfg.Checklist,
+			}
+			dashboard := ui.NewInlineDashboard(tuiCfg, getWorkers, getUsage)
+			go dashboard.Run()
+
+			// Wait for all workers, then stop the dashboard
+			<-done
+			dashboard.Stop()
+		} else {
+			// Text-based progress (original behavior)
+			ticker := time.NewTicker(60 * time.Second)
+
+			go func() {
+				for {
+					select {
+					case <-ticker.C:
+						infos := buildLiveWorkerInfos(cfg, workers)
+						fmt.Println()
+						ui.PrintStatus(cfg.Checklist, infos)
+					case <-done:
+						ticker.Stop()
+						return
+					}
+				}
+			}()
+
+			// Wait for all workers
+			<-done
+		}
 	}
 
 	// 16. Final status
@@ -301,6 +437,22 @@ func runRun(cmd *cobra.Command, args []string) error {
 	finalInfos := buildLiveWorkerInfos(cfg, workers)
 	ui.PrintStatus(cfg.Checklist, finalInfos)
 	fmt.Println("\nAll workers finished.")
+
+	// Print token usage summary.
+	_, _, _, totalCost := globalUsage.Snapshot()
+	if totalCost > 0 {
+		fmt.Printf("\nToken usage: $%.2f total\n", totalCost)
+		for _, w := range workers {
+			if w.Usage != nil {
+				in, out, _, cost := w.Usage.Snapshot()
+				if cost > 0 {
+					fmt.Printf("  W%d %s: %d in, %d out ($%.2f)\n", w.Num, w.Name, in, out, cost)
+				}
+			}
+		}
+	}
+
+	notifier.Send(notify.EventComplete, fmt.Sprintf("*Ralph finished*\nAll %d workers completed.", len(workers)))
 
 	return nil
 }
@@ -385,4 +537,13 @@ func listenHotkeys(tokenMgr *permission.TokenManager, cfg *config.Config, shutdo
 			return
 		}
 	}
+}
+
+// isTerminal reports whether stdout is connected to a terminal.
+func isTerminal() bool {
+	fi, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
 }
