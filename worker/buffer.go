@@ -24,9 +24,15 @@ func NewResultBuffer() *ResultBuffer {
 // Accept records a parent-accepted buffered result.
 func (b *ResultBuffer) Accept(result state.BufferedResult) {
 	if result.Complete {
+		b.removeByPath(&b.partial, result.Path)
+		b.removeByPath(&b.completed, result.Path)
 		b.completed = append(b.completed, result)
 		return
 	}
+	if b.containsCompleted(result.Path) {
+		return
+	}
+	b.removeByPath(&b.partial, result.Path)
 	b.partial = append(b.partial, result)
 }
 
@@ -79,4 +85,23 @@ func acceptBatchIntoBuffer(buf *ResultBuffer, batch acceptedBatch, generation in
 		added++
 	}
 	return added
+}
+
+func (b *ResultBuffer) containsCompleted(path string) bool {
+	for _, result := range b.completed {
+		if result.Path == path {
+			return true
+		}
+	}
+	return false
+}
+
+func (b *ResultBuffer) removeByPath(results *[]state.BufferedResult, path string) {
+	filtered := (*results)[:0]
+	for _, result := range *results {
+		if result.Path != path {
+			filtered = append(filtered, result)
+		}
+	}
+	*results = filtered
 }
