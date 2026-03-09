@@ -165,6 +165,9 @@ func (d *InlineDashboard) render() {
 		if childLabel := workerChildPoolLabel(w); childLabel != "" {
 			statusText += " | " + childLabel
 		}
+		if generationLabel := workerGenerationLabel(w); generationLabel != "" {
+			statusText += " | " + generationLabel
+		}
 		status := s.dim.Render(statusText)
 
 		b.WriteString(fmt.Sprintf("%s %s %s | %s\n", label, statusIcon, remaining, status))
