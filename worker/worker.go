@@ -83,6 +83,18 @@ func (w *Worker) GetActiveChildren() int {
 	return w.ActiveChildren
 }
 
+func shouldCommitIteration(exitCode int, runErr error) bool {
+	return exitCode == 0 && runErr == nil
+}
+
+func shouldRetryIteration(exitCode int, runErr error, completed int) bool {
+	return (exitCode != 0 || runErr != nil) && completed == 0
+}
+
+func shouldAbortIteration(exitCode int, runErr error, completed int) bool {
+	return (exitCode != 0 || runErr != nil) && completed > 0
+}
+
 // Run starts the worker loop. It blocks until all items are done, max
 // iterations reached, or shutdown is signaled via the Shutdown flag or
 // context cancellation.
@@ -189,8 +201,13 @@ func (w *Worker) Run(ctx context.Context) error {
 				w.logf("[W%d %s] Permission issue resolved — will retry on next iteration\n", w.Num, w.Name)
 			}
 
-			// Determine if iteration failed: non-zero exit or error, AND no items completed.
-			iterFailed := (exitCode != 0 || runErr != nil) && completed == 0
+			if shouldAbortIteration(exitCode, runErr, completed) {
+				w.setStatus("error")
+				return fmt.Errorf("[W%d %s] iteration #%d had mixed success and failure; workspace left uncommitted for inspection", w.Num, w.Name, i)
+			}
+
+			// Determine if iteration failed cleanly enough to retry.
+			iterFailed := shouldRetryIteration(exitCode, runErr, completed)
 			if !iterFailed || attempt >= w.Config.MaxRetries {
 				if iterFailed {
 					w.logf("[W%d %s] Iteration #%d: failed after %d retries\n",
@@ -228,11 +245,15 @@ func (w *Worker) Run(ctx context.Context) error {
 		}
 
 		// Commit any changes.
-		w.setStatus("committing")
-		commitMsg := fmt.Sprintf("ralph: W%d %s iter #%d — %d items completed", w.Num, w.Name, i, completed)
-		if commitErr := w.gitCommit(commitMsg); commitErr != nil {
-			w.logf("[W%d %s] Iteration #%d: git commit warning: %v\n", w.Num, w.Name, i, commitErr)
-			// Non-fatal — agent may not have produced changes.
+		if shouldCommitIteration(exitCode, runErr) {
+			w.setStatus("committing")
+			commitMsg := fmt.Sprintf("ralph: W%d %s iter #%d — %d items completed", w.Num, w.Name, i, completed)
+			if commitErr := w.gitCommit(commitMsg); commitErr != nil {
+				w.logf("[W%d %s] Iteration #%d: git commit warning: %v\n", w.Num, w.Name, i, commitErr)
+				// Non-fatal — agent may not have produced changes.
+			}
+		} else {
+			w.logf("[W%d %s] Iteration #%d: skipping git commit because batch did not finish cleanly\n", w.Num, w.Name, i)
 		}
 
 		// Update state under lock.
