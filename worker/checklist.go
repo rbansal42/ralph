@@ -173,6 +173,47 @@ func CountPending(checklistPath string, pattern string) (int, error) {
 	return len(pending), nil
 }
 
+// MarkCompletedPaths updates matching pending checklist lines from [~] to [x].
+func MarkCompletedPaths(checklistPath string, paths []string) error {
+	if len(paths) == 0 {
+		return nil
+	}
+
+	targets := make(map[string]bool, len(paths))
+	for _, path := range paths {
+		targets[path] = true
+	}
+
+	data, err := os.ReadFile(checklistPath)
+	if err != nil {
+		return fmt.Errorf("reading checklist for update: %w", err)
+	}
+
+	lines := strings.Split(string(data), "\n")
+	for i, line := range lines {
+		m := checklistRe.FindStringSubmatch(line)
+		if m == nil || m[1] != "~" {
+			continue
+		}
+		if !targets[m[2]] {
+			continue
+		}
+		lines[i] = strings.Replace(line, "[~]", "[x]", 1)
+	}
+
+	if err := os.WriteFile(checklistPath, []byte(strings.Join(lines, "\n")), 0o644); err != nil {
+		return fmt.Errorf("writing checklist update: %w", err)
+	}
+
+	checklistCache.mu.Lock()
+	if checklistCache.path == checklistPath {
+		checklistCache.readAt = time.Time{}
+	}
+	checklistCache.mu.Unlock()
+
+	return nil
+}
+
 // DetectOverlaps checks all worker patterns against the checklist and returns
 // pairs of workers that would match the same items. This is a pre-run validation.
 func DetectOverlaps(checklistPath string, workers []struct{ Name, Pattern string }) []string {
