@@ -1,6 +1,47 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func mustLoadConfigFromTOML(t *testing.T, raw string) *Config {
+	t.Helper()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ralph.toml")
+	if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	return cfg
+}
+
+func TestLoadParentWorkerDefaults(t *testing.T) {
+	cfg := mustLoadConfigFromTOML(t, `
+backend = "opencode"
+checklist = "CHECKLIST.md"
+prompt = "prompt.md"
+
+[[worker]]
+name = "tasks"
+pattern = "app/Tasks"
+`)
+
+	if cfg.WorkerParallelism != 2 {
+		t.Fatalf("WorkerParallelism = %d, want 2", cfg.WorkerParallelism)
+	}
+
+	if cfg.ParentResetAfterRuns != 25 {
+		t.Fatalf("ParentResetAfterRuns = %d, want 25", cfg.ParentResetAfterRuns)
+	}
+}
 
 func TestResolveModelAlias(t *testing.T) {
 	tests := []struct {
