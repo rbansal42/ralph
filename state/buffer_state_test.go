@@ -14,6 +14,8 @@ func TestStateRoundTripBufferedWorkerState(t *testing.T) {
 				ParentGeneration:   2,
 				GenerationRuns:     4,
 				PendingCommitCount: 3,
+				ResetCount:         1,
+				LastResetReason:    "generation threshold",
 				BufferedCompleted: []BufferedResult{
 					{Path: "app/Tasks/A.php", Complete: true, Generation: 2},
 				},
@@ -40,6 +42,12 @@ func TestStateRoundTripBufferedWorkerState(t *testing.T) {
 	}
 	if got.PendingCommitCount != 3 {
 		t.Fatalf("PendingCommitCount = %d, want 3", got.PendingCommitCount)
+	}
+	if got.ResetCount != 1 {
+		t.Fatalf("ResetCount = %d, want 1", got.ResetCount)
+	}
+	if got.LastResetReason != "generation threshold" {
+		t.Fatalf("LastResetReason = %q, want %q", got.LastResetReason, "generation threshold")
 	}
 	if len(got.BufferedCompleted) != 1 || got.BufferedCompleted[0].Path != "app/Tasks/A.php" {
 		t.Fatalf("BufferedCompleted = %#v, want one completed item", got.BufferedCompleted)
