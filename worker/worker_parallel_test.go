@@ -234,3 +234,58 @@ func TestRunChildBatchDoesNotUpdateChecklistOnMixedFailure(t *testing.T) {
 		t.Fatalf("checklist changed on mixed failure:\n%s", got)
 	}
 }
+
+func TestCollectChildBatchUsesShapedCompanionClaims(t *testing.T) {
+	dir := t.TempDir()
+	checklistPath := filepath.Join(dir, "CHECKLIST.md")
+	basePrompt := filepath.Join(dir, "prompt.md")
+
+	if err := os.WriteFile(basePrompt, []byte("base instructions"), 0o644); err != nil {
+		t.Fatalf("WriteFile(prompt) error = %v", err)
+	}
+
+	raw := strings.Join([]string{
+		"- [~] worker/foo.go — pending",
+		"- [~] worker/foo_test.go — pending",
+		"",
+	}, "\n")
+	if err := os.WriteFile(checklistPath, []byte(raw), 0o644); err != nil {
+		t.Fatalf("WriteFile(checklist) error = %v", err)
+	}
+
+	backend := &fakeParallelBackend{delay: 10 * time.Millisecond}
+	worker := &Worker{
+		Num:          1,
+		Name:         "tasks",
+		Pattern:      "worker/",
+		TotalWorkers: 1,
+		Backend:      backend,
+		Config: &config.Config{
+			Checklist:         checklistPath,
+			Prompt:            basePrompt,
+			Model:             "fake-model",
+			Workdir:           dir,
+			WorkerParallelism: 2,
+		},
+		State:      &state.State{},
+		GitMutex:   &sync.Mutex{},
+		StateMutex: &sync.Mutex{},
+		Shutdown:   &atomic.Bool{},
+	}
+
+	items, err := GetPending(checklistPath, "worker/")
+	if err != nil {
+		t.Fatalf("GetPending() error = %v", err)
+	}
+
+	batch, err := worker.collectChildBatch(context.Background(), 1, items, nil)
+	if err != nil {
+		t.Fatalf("collectChildBatch() error = %v", err)
+	}
+	if len(batch.completed) != 2 {
+		t.Fatalf("len(batch.completed) = %d, want 2", len(batch.completed))
+	}
+	if backend.maxConcurrent != 1 {
+		t.Fatalf("maxConcurrent = %d, want 1 because companion claims overlap", backend.maxConcurrent)
+	}
+}

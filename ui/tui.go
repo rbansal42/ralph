@@ -168,6 +168,9 @@ func (d *InlineDashboard) render() {
 		if generationLabel := workerGenerationLabel(w); generationLabel != "" {
 			statusText += " | " + generationLabel
 		}
+		if safetyLabel := workerSafetyLabel(w); safetyLabel != "" {
+			statusText += " | " + safetyLabel
+		}
 		status := s.dim.Render(statusText)
 
 		b.WriteString(fmt.Sprintf("%s %s %s | %s\n", label, statusIcon, remaining, status))
