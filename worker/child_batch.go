@@ -11,6 +11,9 @@ import (
 )
 
 type childTaskResult struct {
+	taskID    string
+	files     []string
+	serialOnly bool
 	output    string
 	exitCode  int
 	err       error
@@ -44,11 +47,9 @@ func (w *Worker) collectChildBatch(
 
 	tasks := make([]Task, 0, len(items))
 	for _, item := range items {
-		tasks = append(tasks, Task{
-			ID:    item.Path,
-			Item:  item,
-			Files: []string{item.Path},
-		})
+		task := ShapeChecklistItem(item)
+		task.Item = item
+		tasks = append(tasks, task)
 	}
 
 	parallelTasks, serialTasks := PartitionDispatchable(tasks)
@@ -56,19 +57,23 @@ func (w *Worker) collectChildBatch(
 
 	results := make(chan childTaskResult, len(ordered))
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, parallelism)
+	claims := NewClaimTable()
+	pendingParallel := append([]Task(nil), parallelTasks...)
+	pendingSerial := append([]Task(nil), serialTasks...)
+	activeTasks := 0
+	taskIndex := 0
+	var batch acceptedBatch
+	var outputs strings.Builder
+	exitCode := 0
+	var err error
 
-	for idx, task := range ordered {
+	launchTask := func(idx int, task Task) {
+		activeTasks++
 		wg.Add(1)
 		go func(idx int, task Task) {
 			defer wg.Done()
-
-			sem <- struct{}{}
 			w.changeActiveChildren(1)
-			defer func() {
-				w.changeActiveChildren(-1)
-				<-sem
-			}()
+			defer w.changeActiveChildren(-1)
 
 			logDir := filepath.Join("logs", fmt.Sprintf("w%d_iter_%04d_task_%02d", w.Num, iteration, idx+1))
 			promptFile, promptErr := BuildPrompt(
@@ -85,15 +90,18 @@ func (w *Worker) collectChildBatch(
 				false,
 			)
 			if promptErr != nil {
-				results <- childTaskResult{err: promptErr, exitCode: -1}
+				results <- childTaskResult{taskID: task.ID, files: task.Files, serialOnly: task.SerialOnly, err: promptErr, exitCode: -1}
 				return
 			}
 
 			childOutput, childExit, runErr := w.Backend.RunPrompt(ctx, promptFile, w.Config.Workdir, w.Config.Model)
 			result := childTaskResult{
-				output:   childOutput,
-				exitCode: childExit,
-				err:      runErr,
+				taskID:     task.ID,
+				files:      task.Files,
+				serialOnly: task.SerialOnly,
+				output:     childOutput,
+				exitCode:   childExit,
+				err:        runErr,
 			}
 
 			if parsed, parseErr := ParseChildResult(childOutput); parseErr == nil {
@@ -108,17 +116,43 @@ func (w *Worker) collectChildBatch(
 		}(idx, task)
 	}
 
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
+	tryLaunchParallel := func() bool {
+		if activeTasks >= parallelism {
+			return false
+		}
+		for idx, task := range pendingParallel {
+			if claims.TryClaim(task.ID, task.Files) {
+				pendingParallel = append(pendingParallel[:idx], pendingParallel[idx+1:]...)
+				launchTask(taskIndex, task)
+				taskIndex++
+				return true
+			}
+		}
+		return false
+	}
 
-	var batch acceptedBatch
-	var outputs strings.Builder
-	exitCode := 0
-	var err error
+	for len(pendingParallel) > 0 || len(pendingSerial) > 0 || activeTasks > 0 {
+		progress := false
+		for activeTasks < parallelism && tryLaunchParallel() {
+			progress = true
+		}
+		if activeTasks == 0 && len(pendingSerial) > 0 {
+			task := pendingSerial[0]
+			pendingSerial = pendingSerial[1:]
+			launchTask(taskIndex, task)
+			taskIndex++
+			progress = true
+		}
+		if progress {
+			continue
+		}
 
-	for result := range results {
+		result := <-results
+		activeTasks--
+		if !result.serialOnly {
+			claims.Release(result.taskID)
+		}
+
 		if outputs.Len() > 0 {
 			outputs.WriteString("\n")
 		}
@@ -151,6 +185,8 @@ func (w *Worker) collectChildBatch(
 			exitCode = result.exitCode
 		}
 	}
+
+	wg.Wait()
 
 	w.setActiveChildren(0)
 
