@@ -42,6 +42,8 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		var bufferedCompleted int
 		var bufferedPartial int
 		var resetCount int
+		var serialFallbacks int
+		var claimConflicts int
 		if ws != nil && len(ws.History) > 0 {
 			last := ws.History[len(ws.History)-1]
 			lastElapsed = formatDuration(time.Duration(last.ElapsedS * float64(time.Second)))
@@ -51,6 +53,8 @@ func runStatus(cmd *cobra.Command, args []string) error {
 			bufferedCompleted = len(ws.BufferedCompleted)
 			bufferedPartial = len(ws.BufferedPartial)
 			resetCount = ws.ResetCount
+			serialFallbacks = ws.SerialFallbackCount
+			claimConflicts = ws.ClaimConflictCount
 		}
 
 		workerInfos = append(workerInfos, ui.WorkerInfo{
@@ -66,6 +70,8 @@ func runStatus(cmd *cobra.Command, args []string) error {
 			BufferedCompleted: bufferedCompleted,
 			BufferedPartial:   bufferedPartial,
 			ResetCount:        resetCount,
+			SerialFallbacks:   serialFallbacks,
+			ClaimConflicts:    claimConflicts,
 		})
 	}
 

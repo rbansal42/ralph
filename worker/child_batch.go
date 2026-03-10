@@ -26,6 +26,8 @@ type acceptedBatch struct {
 	partial   []state.BufferedResult
 	output    string
 	exitCode  int
+	serialFallbacks int
+	claimConflicts  int
 }
 
 // collectChildBatch launches one child agent per item and returns the accepted
@@ -66,6 +68,8 @@ func (w *Worker) collectChildBatch(
 	var outputs strings.Builder
 	exitCode := 0
 	var err error
+	blockedSeen := make(map[string]bool)
+	batch.serialFallbacks = len(serialTasks)
 
 	launchTask := func(idx int, task Task) {
 		activeTasks++
@@ -126,6 +130,10 @@ func (w *Worker) collectChildBatch(
 				launchTask(taskIndex, task)
 				taskIndex++
 				return true
+			}
+			if !blockedSeen[task.ID] {
+				blockedSeen[task.ID] = true
+				batch.claimConflicts++
 			}
 		}
 		return false
