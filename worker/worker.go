@@ -45,6 +45,8 @@ type Worker struct {
 	BufferedCompleted int
 	BufferedPartial   int
 	ResetCount        int
+	SerialFallbacks   int
+	ClaimConflicts    int
 	BufferMutex       sync.RWMutex
 }
 
@@ -88,19 +90,21 @@ func (w *Worker) GetActiveChildren() int {
 	return w.ActiveChildren
 }
 
-func (w *Worker) setBufferState(generation int, completed int, partial int, resetCount int) {
+func (w *Worker) setBufferState(generation int, completed int, partial int, resetCount int, serialFallbacks int, claimConflicts int) {
 	w.BufferMutex.Lock()
 	w.CurrentGeneration = generation
 	w.BufferedCompleted = completed
 	w.BufferedPartial = partial
 	w.ResetCount = resetCount
+	w.SerialFallbacks = serialFallbacks
+	w.ClaimConflicts = claimConflicts
 	w.BufferMutex.Unlock()
 }
 
-func (w *Worker) GetBufferState() (generation int, completed int, partial int, resetCount int) {
+func (w *Worker) GetBufferState() (generation int, completed int, partial int, resetCount int, serialFallbacks int, claimConflicts int) {
 	w.BufferMutex.RLock()
 	defer w.BufferMutex.RUnlock()
-	return w.CurrentGeneration, w.BufferedCompleted, w.BufferedPartial, w.ResetCount
+	return w.CurrentGeneration, w.BufferedCompleted, w.BufferedPartial, w.ResetCount, w.SerialFallbacks, w.ClaimConflicts
 }
 
 func shouldCommitIteration(exitCode int, runErr error) bool {
@@ -140,7 +144,7 @@ func (w *Worker) Run(ctx context.Context) error {
 	}
 	generationRuns := ws.GenerationRuns
 	buffer := ResultBufferFromWorkerState(ws)
-	w.setBufferState(currentGeneration, buffer.CompletedCount(), buffer.PartialCount(), ws.ResetCount)
+	w.setBufferState(currentGeneration, buffer.CompletedCount(), buffer.PartialCount(), ws.ResetCount, ws.SerialFallbackCount, ws.ClaimConflictCount)
 	w.StateMutex.Unlock()
 
 	consecutiveStale := 0
@@ -285,14 +289,16 @@ func (w *Worker) Run(ctx context.Context) error {
 			}
 		}
 
-		if shouldCommitIteration(exitCode, runErr) {
-			acceptedRuns := acceptBatchIntoBuffer(buffer, batch, currentGeneration)
-			generationRuns += acceptedRuns
-			if shouldResetGeneration(generationRuns, w.Config.ParentResetAfterRuns) {
-				currentGeneration++
-				generationRuns = 0
-				ws.ResetCount++
-				ws.LastResetReason = "generation threshold"
+			if shouldCommitIteration(exitCode, runErr) {
+				acceptedRuns := acceptBatchIntoBuffer(buffer, batch, currentGeneration)
+				generationRuns += acceptedRuns
+				ws.SerialFallbackCount += batch.serialFallbacks
+				ws.ClaimConflictCount += batch.claimConflicts
+				if shouldResetGeneration(generationRuns, w.Config.ParentResetAfterRuns) {
+					currentGeneration++
+					generationRuns = 0
+					ws.ResetCount++
+					ws.LastResetReason = "generation threshold"
 				w.logf("[W%d %s] Parent generation rolled to %d\n", w.Num, w.Name, currentGeneration)
 			}
 		}
@@ -334,7 +340,7 @@ func (w *Worker) Run(ctx context.Context) error {
 		ws.GenerationRuns = generationRuns
 		ws.PendingCommitCount = buffer.CompletedCount()
 		buffer.WriteToWorkerState(ws)
-		w.setBufferState(currentGeneration, buffer.CompletedCount(), buffer.PartialCount(), ws.ResetCount)
+		w.setBufferState(currentGeneration, buffer.CompletedCount(), buffer.PartialCount(), ws.ResetCount, ws.SerialFallbackCount, ws.ClaimConflictCount)
 		w.State.RecordIteration(w.Name, i, completed, elapsed, exitCode)
 		if saveErr := w.State.Save(w.Config.StateFile); saveErr != nil {
 			w.StateMutex.Unlock()

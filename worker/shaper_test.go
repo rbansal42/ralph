@@ -1,0 +1,42 @@
+package worker
+
+import "testing"
+
+func TestShapeTaskUsesExactPathClaim(t *testing.T) {
+	item := ChecklistItem{Path: "app/Tasks/A.php"}
+
+	task := ShapeChecklistItem(item)
+
+	if len(task.Files) != 1 || task.Files[0] != "app/Tasks/A.php" {
+		t.Fatalf("Files = %#v, want exact-path claim", task.Files)
+	}
+	if task.SerialOnly {
+		t.Fatal("exact-path task should not be serial-only")
+	}
+}
+
+func TestShapeTaskFallsBackToSerialWhenNoRuleApplies(t *testing.T) {
+	item := ChecklistItem{}
+
+	task := ShapeChecklistItem(item)
+
+	if !task.SerialOnly {
+		t.Fatal("expected serial fallback for unshapeable item")
+	}
+	if task.ShapeReason == "" {
+		t.Fatal("expected shaping reason for serial fallback")
+	}
+}
+
+func TestShapeTaskClaimsCompanionTestFileForGoSource(t *testing.T) {
+	item := ChecklistItem{Path: "worker/foo.go"}
+
+	task := ShapeChecklistItem(item)
+
+	if len(task.Files) != 2 {
+		t.Fatalf("len(Files) = %d, want 2", len(task.Files))
+	}
+	if task.Files[0] != "worker/foo.go" || task.Files[1] != "worker/foo_test.go" {
+		t.Fatalf("Files = %#v, want source + companion test file", task.Files)
+	}
+}
