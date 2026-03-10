@@ -27,3 +27,16 @@ func TestShapeTaskFallsBackToSerialWhenNoRuleApplies(t *testing.T) {
 		t.Fatal("expected shaping reason for serial fallback")
 	}
 }
+
+func TestShapeTaskClaimsCompanionTestFileForGoSource(t *testing.T) {
+	item := ChecklistItem{Path: "worker/foo.go"}
+
+	task := ShapeChecklistItem(item)
+
+	if len(task.Files) != 2 {
+		t.Fatalf("len(Files) = %d, want 2", len(task.Files))
+	}
+	if task.Files[0] != "worker/foo.go" || task.Files[1] != "worker/foo_test.go" {
+		t.Fatalf("Files = %#v, want source + companion test file", task.Files)
+	}
+}
