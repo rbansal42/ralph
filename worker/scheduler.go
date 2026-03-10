@@ -7,6 +7,7 @@ type Task struct {
 	Item       ChecklistItem
 	Files      []string
 	SerialOnly bool
+	ShapeReason string
 }
 
 // ClaimTable tracks which child currently owns each claimed file.
