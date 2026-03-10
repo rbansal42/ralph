@@ -36,6 +36,8 @@ type WorkerInfo struct {
 	BufferedCompleted int
 	BufferedPartial   int
 	ResetCount        int
+	SerialFallbacks   int
+	ClaimConflicts    int
 }
 
 func workerChildPoolLabel(info WorkerInfo) string {
@@ -54,6 +56,13 @@ func workerGenerationLabel(info WorkerInfo) string {
 		label += fmt.Sprintf(" | resets %d", info.ResetCount)
 	}
 	return label
+}
+
+func workerSafetyLabel(info WorkerInfo) string {
+	if info.SerialFallbacks == 0 && info.ClaimConflicts == 0 {
+		return ""
+	}
+	return fmt.Sprintf("serial %d | conflicts %d", info.SerialFallbacks, info.ClaimConflicts)
 }
 
 // boxWidth is the inner content width between the left and right border characters.
@@ -128,6 +137,9 @@ func PrintStatus(checklistPath string, workers []WorkerInfo) {
 		}
 		if generationLabel := workerGenerationLabel(w); generationLabel != "" {
 			content += " | " + generationLabel
+		}
+		if safetyLabel := workerSafetyLabel(w); safetyLabel != "" {
+			content += " | " + safetyLabel
 		}
 		printBoxLine(content, countVisibleLen(content))
 	}

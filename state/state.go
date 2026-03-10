@@ -37,6 +37,8 @@ type WorkerState struct {
 	PendingCommitCount int             `json:"pending_commit_count,omitempty"`
 	ResetCount       int               `json:"reset_count,omitempty"`
 	LastResetReason  string            `json:"last_reset_reason,omitempty"`
+	SerialFallbackCount int            `json:"serial_fallback_count,omitempty"`
+	ClaimConflictCount  int            `json:"claim_conflict_count,omitempty"`
 	BufferedCompleted []BufferedResult `json:"buffered_completed,omitempty"`
 	BufferedPartial   []BufferedResult `json:"buffered_partial,omitempty"`
 	ClaimedFiles     map[string]string `json:"claimed_files,omitempty"`
