@@ -222,7 +222,7 @@ func generatePromptContent(backendName string, model string, taskDesc string) (s
 		return basicPromptTemplate(""), nil
 	}
 
-	be, err := backend.New(backendName)
+	be, err := backend.New(backendName, nil)
 	if err != nil {
 		fmt.Printf("  Could not create backend: %v — using basic template\n", err)
 		return basicPromptTemplate(taskDesc), nil

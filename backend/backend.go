@@ -3,6 +3,8 @@ package backend
 import (
 	"context"
 	"fmt"
+	"io"
+	"os"
 )
 
 // Backend is the interface that all CLI coding agent backends must implement.
@@ -26,12 +28,16 @@ type Backend interface {
 }
 
 // New returns a Backend for the given name. Supported names: "opencode", "claude".
-func New(name string) (Backend, error) {
+// If output is non-nil, subprocess stdout is streamed there instead of os.Stdout.
+func New(name string, output io.Writer) (Backend, error) {
+	if output == nil {
+		output = os.Stdout
+	}
 	switch name {
 	case "opencode":
-		return &OpenCode{}, nil
+		return &OpenCode{Output: output}, nil
 	case "claude":
-		return &Claude{}, nil
+		return &Claude{Output: output}, nil
 	default:
 		return nil, fmt.Errorf("unknown backend %q (supported: opencode, claude)", name)
 	}

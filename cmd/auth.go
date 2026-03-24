@@ -46,7 +46,7 @@ func runAuth(cmd *cobra.Command, args []string) error {
 		model = config.ResolveModelAlias(authModel)
 	}
 
-	b, err := backend.New(backendName)
+	b, err := backend.New(backendName, nil)
 	if err != nil {
 		return fmt.Errorf("creating backend: %w", err)
 	}

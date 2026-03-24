@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -41,6 +42,7 @@ type Worker struct {
 	}
 	Usage         *TokenUsage     // per-worker token usage
 	GlobalUsage   *TokenUsage     // shared across all workers for budget checking
+	Output        io.Writer       // log output destination (defaults to os.Stdout)
 	modifiedFiles map[string]bool // files modified by this worker (protected by GitMutex)
 	CurrentStatus string
 	StatusMutex   sync.RWMutex
@@ -55,9 +57,13 @@ type Worker struct {
 	BufferMutex       sync.RWMutex
 }
 
-// logf writes a formatted log line to stdout.
+// logf writes a formatted log line to the worker's output writer.
 func (w *Worker) logf(format string, args ...interface{}) {
-	fmt.Fprintf(os.Stdout, format, args...)
+	out := w.Output
+	if out == nil {
+		out = os.Stdout
+	}
+	fmt.Fprintf(out, format, args...)
 }
 
 // setStatus updates the worker's current status string in a thread-safe manner.

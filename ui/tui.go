@@ -43,8 +43,13 @@ func newTUIStyles() tuiStyles {
 // terminal, rclone-style. Log output from workers and agents flows to stdout
 // normally (scrolling up), and the dashboard is periodically overwritten in
 // place using ANSI cursor movement.
+//
+// When paired with a LogWriter, all stdout writes are synchronized with dashboard
+// redraws to prevent ANSI cursor corruption.
 type InlineDashboard struct {
-	mu         sync.Mutex
+	logWriter  *LogWriter  // shared mutex for synchronized writes; may be nil
+	renderMu   *sync.Mutex // points to logWriter.mu or fallbackMu
+	fallbackMu sync.Mutex  // used when no LogWriter is provided
 	config     TUIConfig
 	getWorkers func() []WorkerInfo
 	getUsage   func() float64
@@ -52,13 +57,16 @@ type InlineDashboard struct {
 	lastLines  int // number of lines rendered in the last frame
 	styles     tuiStyles
 	stopped    bool
+	stopMu     sync.Mutex // protects stopped flag only
 	stopCh     chan struct{}
 	doneCh     chan struct{}
 }
 
-// NewInlineDashboard creates a new inline dashboard.
-func NewInlineDashboard(cfg TUIConfig, getWorkers func() []WorkerInfo, getUsage func() float64) *InlineDashboard {
-	return &InlineDashboard{
+// NewInlineDashboard creates a new inline dashboard. If lw is non-nil, the
+// dashboard registers itself so LogWriter can coordinate stdout writes.
+func NewInlineDashboard(cfg TUIConfig, getWorkers func() []WorkerInfo, getUsage func() float64, lw *LogWriter) *InlineDashboard {
+	d := &InlineDashboard{
+		logWriter:  lw,
 		config:     cfg,
 		getWorkers: getWorkers,
 		getUsage:   getUsage,
@@ -67,6 +75,13 @@ func NewInlineDashboard(cfg TUIConfig, getWorkers func() []WorkerInfo, getUsage 
 		stopCh:     make(chan struct{}),
 		doneCh:     make(chan struct{}),
 	}
+	if lw != nil {
+		d.renderMu = &lw.mu
+		lw.dashboard = d
+	} else {
+		d.renderMu = &d.fallbackMu
+	}
+	return d
 }
 
 // Run starts the dashboard refresh loop. It blocks until Stop() is called.
@@ -90,34 +105,38 @@ func (d *InlineDashboard) Run() {
 
 // Stop signals the dashboard to stop refreshing and cleans up.
 func (d *InlineDashboard) Stop() {
-	d.mu.Lock()
+	d.stopMu.Lock()
 	if d.stopped {
-		d.mu.Unlock()
+		d.stopMu.Unlock()
 		return
 	}
 	d.stopped = true
-	d.mu.Unlock()
+	d.stopMu.Unlock()
 	close(d.stopCh)
 	<-d.doneCh
 
-	// Clear the dashboard from terminal so final summary prints cleanly
-	d.clearLastRender()
-}
-
-// clearLastRender moves cursor up and clears the lines from the last render.
-func (d *InlineDashboard) clearLastRender() {
+	// Clear the dashboard and unregister from LogWriter atomically.
+	d.renderMu.Lock()
 	if d.lastLines > 0 {
-		// Move cursor up N lines and clear to end of screen
 		fmt.Fprintf(os.Stdout, "\033[%dA\033[J", d.lastLines)
 		d.lastLines = 0
 	}
+	if d.logWriter != nil {
+		d.logWriter.dashboard = nil
+	}
+	d.renderMu.Unlock()
 }
 
 // render draws the dashboard, overwriting the previous frame.
 func (d *InlineDashboard) render() {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	d.renderMu.Lock()
+	defer d.renderMu.Unlock()
+	d.renderUnsafe()
+}
 
+// renderUnsafe draws the dashboard without acquiring the lock.
+// Caller must hold d.renderMu.
+func (d *InlineDashboard) renderUnsafe() {
 	workers := d.getWorkers()
 	totalCost := d.getUsage()
 	s := d.styles

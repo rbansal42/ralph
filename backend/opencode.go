@@ -14,7 +14,9 @@ import (
 const opencodeBin = "opencode"
 
 // OpenCode implements Backend using the opencode CLI.
-type OpenCode struct{}
+type OpenCode struct {
+	Output io.Writer // subprocess stdout destination (set by backend.New)
+}
 
 func (o *OpenCode) Name() string { return "opencode" }
 
@@ -57,7 +59,7 @@ func (o *OpenCode) RunPrompt(ctx context.Context, promptFile string, workdir str
 	cmd.Stdin = f
 
 	var buf bytes.Buffer
-	cmd.Stdout = io.MultiWriter(os.Stdout, &buf)
+	cmd.Stdout = io.MultiWriter(o.Output, &buf)
 	cmd.Stderr = io.MultiWriter(os.Stderr, &buf)
 
 	err = cmd.Run()
