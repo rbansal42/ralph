@@ -132,15 +132,8 @@ func PrintStatus(checklistPath string, workers []WorkerInfo) {
 
 		content := fmt.Sprintf("  %s%s %-6s%s: %3d remaining | %s",
 			clr, label, name, colorReset, w.Remaining, statusStr)
-		if childLabel := workerChildPoolLabel(w); childLabel != "" {
-			content += " | " + childLabel
-		}
-		if generationLabel := workerGenerationLabel(w); generationLabel != "" {
-			content += " | " + generationLabel
-		}
-		if safetyLabel := workerSafetyLabel(w); safetyLabel != "" {
-			content += " | " + safetyLabel
-		}
+		// Extra labels (children, generation, safety) are omitted from the
+		// fixed-width box to prevent overflow. They display in the live TUI.
 		printBoxLine(content, countVisibleLen(content))
 	}
 

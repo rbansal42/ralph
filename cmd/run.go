@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -71,13 +72,26 @@ func runRun(cmd *cobra.Command, args []string) error {
 		cfg.AutoApprovePermissions = false
 	}
 
-	// 3. Create backend
-	b, err := backend.New(cfg.Backend)
+	// 3. Determine TUI mode early so we can wire up LogWriter.
+	useTUI := !flagNoTUI && isTerminal()
+
+	// 4. Create synchronized log writer for TUI mode.
+	var logWriter *ui.LogWriter
+	if useTUI {
+		logWriter = ui.NewLogWriter()
+	}
+
+	// 5. Create backend — route subprocess stdout through LogWriter when TUI is active.
+	var backendOutput io.Writer
+	if logWriter != nil {
+		backendOutput = logWriter
+	}
+	b, err := backend.New(cfg.Backend, backendOutput)
 	if err != nil {
 		return fmt.Errorf("creating backend: %w", err)
 	}
 
-	// 4. Print banner
+	// 6. Print banner
 	ui.PrintBanner()
 
 	// 5. Print initial status
@@ -232,7 +246,11 @@ func runRun(cmd *cobra.Command, args []string) error {
 	// 12b. Hotkey listener for live token switching
 	if tokenMgr.Count() > 1 {
 		fmt.Printf("\nHotkeys: [t] rotate token | [s] status\n\n")
-		go listenHotkeys(tokenMgr, cfg, &shutdown)
+		var hotkeyOutput io.Writer = os.Stdout
+		if logWriter != nil {
+			hotkeyOutput = logWriter
+		}
+		go listenHotkeys(tokenMgr, cfg, &shutdown, hotkeyOutput)
 	}
 
 	// Permission handler — called when a worker detects a permission block.
@@ -280,7 +298,11 @@ func runRun(cmd *cobra.Command, args []string) error {
 		return false
 	}
 
-	// Build workers
+	// Build workers — route log output through LogWriter when TUI is active.
+	var workerOutput io.Writer
+	if logWriter != nil {
+		workerOutput = logWriter
+	}
 	globalUsage := &worker.TokenUsage{Model: cfg.Model}
 	workers := make([]*worker.Worker, 0, len(cfg.Workers))
 	for i, wc := range cfg.Workers {
@@ -300,6 +322,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 			Notifier:     notifier,
 			Usage:        &worker.TokenUsage{Model: cfg.Model},
 			GlobalUsage:  globalUsage,
+			Output:       workerOutput,
 		}
 		workers = append(workers, w)
 	}
@@ -384,8 +407,6 @@ func runRun(cmd *cobra.Command, args []string) error {
 			close(done)
 		}()
 
-		useTUI := !flagNoTUI && isTerminal()
-
 		if useTUI {
 			// Launch inline dashboard (rclone-style: logs scroll above,
 			// status block redraws at bottom via ANSI cursor movement).
@@ -403,7 +424,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 				Concurrency: cfg.Concurrency,
 				Checklist:   cfg.Checklist,
 			}
-			dashboard := ui.NewInlineDashboard(tuiCfg, getWorkers, getUsage)
+			dashboard := ui.NewInlineDashboard(tuiCfg, getWorkers, getUsage, logWriter)
 			go dashboard.Run()
 
 			// Wait for all workers, then stop the dashboard
@@ -502,8 +523,8 @@ func buildLiveWorkerInfos(cfg *config.Config, workers []*worker.Worker) []ui.Wor
 }
 
 // listenHotkeys reads single keypresses from stdin for live token switching.
-// Runs as a goroutine during ralph run.
-func listenHotkeys(tokenMgr *permission.TokenManager, cfg *config.Config, shutdown *atomic.Bool) {
+// Runs as a goroutine during ralph run. Output goes through w for TUI synchronization.
+func listenHotkeys(tokenMgr *permission.TokenManager, cfg *config.Config, shutdown *atomic.Bool, w io.Writer) {
 	// Set terminal to raw mode to read single characters
 	// Save old state and restore on exit
 	fd := int(os.Stdin.Fd())
@@ -530,18 +551,17 @@ func listenHotkeys(tokenMgr *permission.TokenManager, cfg *config.Config, shutdo
 			// Rotate to next token
 			entry, err := tokenMgr.Rotate()
 			if err != nil {
-				fmt.Printf("\n[ralph] Token rotate failed: %v\n", err)
+				fmt.Fprintf(w, "\n[ralph] Token rotate failed: %v\n", err)
 			} else {
-				fmt.Printf("\n[ralph] Switched to token: %s (%s)\n", entry.Name, permission.MaskKey(entry.Key))
-				fmt.Println("[ralph] New iterations will use this token")
+				fmt.Fprintf(w, "\n[ralph] Switched to token: %s (%s)\n", entry.Name, permission.MaskKey(entry.Key))
+				fmt.Fprintf(w, "[ralph] New iterations will use this token\n")
 			}
 
 		case 's':
 			// Print status
-			fmt.Println()
-			fmt.Println("[ralph] Token pool:")
+			fmt.Fprintf(w, "\n[ralph] Token pool:\n")
 			for _, line := range tokenMgr.List() {
-				fmt.Printf("  %s\n", line)
+				fmt.Fprintf(w, "  %s\n", line)
 			}
 
 		case 3: // Ctrl+C

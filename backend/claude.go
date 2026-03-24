@@ -14,7 +14,9 @@ import (
 const claudeBin = "claude"
 
 // Claude implements Backend using the Claude Code CLI.
-type Claude struct{}
+type Claude struct {
+	Output io.Writer // subprocess stdout destination (set by backend.New)
+}
 
 func (c *Claude) Name() string { return "claude" }
 
@@ -61,7 +63,7 @@ func (c *Claude) RunPrompt(ctx context.Context, promptFile string, workdir strin
 	cmd.Stdin = f
 
 	var buf bytes.Buffer
-	cmd.Stdout = io.MultiWriter(os.Stdout, &buf)
+	cmd.Stdout = io.MultiWriter(c.Output, &buf)
 	cmd.Stderr = io.MultiWriter(os.Stderr, &buf)
 
 	err = cmd.Run()
