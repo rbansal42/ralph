@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"time"
 )
 
 // telegram implements Notifier via the Telegram Bot API.
@@ -13,6 +12,7 @@ type telegram struct {
 	botToken string
 	chatID   string
 	events   map[string]bool
+	client   *http.Client // shared client for connection reuse
 }
 
 func (t *telegram) ShouldNotify(event string) bool {
@@ -46,8 +46,7 @@ func (t *telegram) send(message string) error {
 		return fmt.Errorf("marshalling payload: %w", err)
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Post(url, "application/json", bytes.NewReader(body))
+	resp, err := t.client.Post(url, "application/json", bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("sending request: %w", err)
 	}

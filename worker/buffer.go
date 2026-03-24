@@ -63,6 +63,10 @@ func (b *ResultBuffer) FlushCompleted(threshold int) []state.BufferedResult {
 		return nil
 	}
 	b.completed = nil
+	// Prune stale partials whose paths are now flushed as completed.
+	for _, r := range results {
+		b.removeByPath(&b.partial, r.Path)
+	}
 	return results
 }
 
@@ -102,6 +106,10 @@ func (b *ResultBuffer) removeByPath(results *[]state.BufferedResult, path string
 		if result.Path != path {
 			filtered = append(filtered, result)
 		}
+	}
+	// Zero out tail elements so removed BufferedResult values can be GC'd.
+	for i := len(filtered); i < len(*results); i++ {
+		(*results)[i] = state.BufferedResult{}
 	}
 	*results = filtered
 }
