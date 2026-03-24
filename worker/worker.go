@@ -17,6 +17,11 @@ import (
 
 // Worker processes checklist items by spawning AI agent sessions in a loop.
 // Each Worker runs as a goroutine, coordinating with others via shared mutexes.
+//
+// CONCURRENCY NOTE: Multiple workers share a single working directory. The
+// GitMutex serializes git operations, but concurrent AI agents may modify the
+// same files (especially the checklist). Workers use pre/post snapshots to
+// stage only their own changes, but perfect isolation requires git worktrees.
 type Worker struct {
 	Num          int
 	Name         string
@@ -36,7 +41,7 @@ type Worker struct {
 	}
 	Usage         *TokenUsage     // per-worker token usage
 	GlobalUsage   *TokenUsage     // shared across all workers for budget checking
-	ModifiedFiles map[string]bool // files modified by this worker (protected by GitMutex)
+	modifiedFiles map[string]bool // files modified by this worker (protected by GitMutex)
 	CurrentStatus string
 	StatusMutex   sync.RWMutex
 	ActiveChildren int
@@ -67,6 +72,17 @@ func (w *Worker) GetStatus() string {
 	w.StatusMutex.RLock()
 	defer w.StatusMutex.RUnlock()
 	return w.CurrentStatus
+}
+
+// GetModifiedFiles returns a copy of the files modified by this worker.
+func (w *Worker) GetModifiedFiles() map[string]bool {
+	w.GitMutex.Lock()
+	defer w.GitMutex.Unlock()
+	cp := make(map[string]bool, len(w.modifiedFiles))
+	for k, v := range w.modifiedFiles {
+		cp[k] = v
+	}
+	return cp
 }
 
 // setActiveChildren updates the active child count in a thread-safe manner.
@@ -200,6 +216,22 @@ func (w *Worker) Run(ctx context.Context) error {
 			partialItems, _ = DetectPartiallyCompleted(w.Config.Checklist, w.Pattern, w.State.RunStartCommit, workdir)
 		}
 
+		// Pre-run budget check — stop before starting an expensive iteration.
+		if w.GlobalUsage != nil && w.Config.BudgetLimit > 0 {
+			_, _, _, totalCost := w.GlobalUsage.Snapshot()
+			if totalCost >= w.Config.BudgetLimit {
+				w.logf("[W%d %s] Budget limit reached ($%.2f >= $%.2f) — stopping before iteration\n",
+					w.Num, w.Name, totalCost, w.Config.BudgetLimit)
+				w.Shutdown.Store(true)
+				w.setStatus("budget exceeded")
+				return nil
+			}
+		}
+
+		// Snapshot dirty files before agent runs, so we can scope git staging
+		// to only files changed by this worker's agent.
+		preRunDirty := captureWorkingTreeState(ctx, w.Config.Workdir)
+
 		// Run the child batch with retry logic for failed iterations.
 		var batch acceptedBatch
 		var output string
@@ -289,16 +321,43 @@ func (w *Worker) Run(ctx context.Context) error {
 			}
 		}
 
-			if shouldCommitIteration(exitCode, runErr) {
-				acceptedRuns := acceptBatchIntoBuffer(buffer, batch, currentGeneration)
-				generationRuns += acceptedRuns
-				ws.SerialFallbackCount += batch.serialFallbacks
-				ws.ClaimConflictCount += batch.claimConflicts
-				if shouldResetGeneration(generationRuns, w.Config.ParentResetAfterRuns) {
-					currentGeneration++
-					generationRuns = 0
-					ws.ResetCount++
-					ws.LastResetReason = "generation threshold"
+		// Determine which files this agent changed by diffing pre/post snapshots.
+		// Always include the checklist since multiple workers update it concurrently.
+		postRunDirty := captureWorkingTreeState(ctx, w.Config.Workdir)
+		var agentFiles []string
+		if preRunDirty != nil && postRunDirty != nil {
+			for file := range postRunDirty {
+				if !preRunDirty[file] {
+					agentFiles = append(agentFiles, file)
+				}
+			}
+			// Always include the checklist — it's shared and may have been
+			// dirty before our agent ran but still needs our updates committed.
+			if postRunDirty[w.Config.Checklist] {
+				found := false
+				for _, f := range agentFiles {
+					if f == w.Config.Checklist {
+						found = true
+						break
+					}
+				}
+				if !found {
+					agentFiles = append(agentFiles, w.Config.Checklist)
+				}
+			}
+		}
+		// If snapshot failed (nil), agentFiles is empty and gitCommit falls back to git add -A.
+
+		if shouldCommitIteration(exitCode, runErr) {
+			acceptedRuns := acceptBatchIntoBuffer(buffer, batch, currentGeneration)
+			generationRuns += acceptedRuns
+			ws.SerialFallbackCount += batch.serialFallbacks
+			ws.ClaimConflictCount += batch.claimConflicts
+			if shouldResetGeneration(generationRuns, w.Config.ParentResetAfterRuns) {
+				currentGeneration++
+				generationRuns = 0
+				ws.ResetCount++
+				ws.LastResetReason = "generation threshold"
 				w.logf("[W%d %s] Parent generation rolled to %d\n", w.Num, w.Name, currentGeneration)
 			}
 		}
@@ -316,7 +375,7 @@ func (w *Worker) Run(ctx context.Context) error {
 				return fmt.Errorf("[W%d %s] updating checklist for flush: %w", w.Num, w.Name, markErr)
 			}
 			commitMsg := fmt.Sprintf("ralph: W%d %s iter #%d — flushed %d buffered items", w.Num, w.Name, i, len(flushCandidates))
-			if commitErr := w.gitCommit(commitMsg); commitErr != nil {
+			if commitErr := w.gitCommit(ctx, commitMsg, agentFiles); commitErr != nil {
 				w.logf("[W%d %s] Iteration #%d: git commit warning: %v\n", w.Num, w.Name, i, commitErr)
 				// Non-fatal — agent may not have produced changes.
 			} else {
@@ -386,35 +445,74 @@ func (w *Worker) Run(ctx context.Context) error {
 	return nil
 }
 
-// gitCommit stages all changes and creates a commit while holding the git
-// mutex to prevent concurrent git operations across workers.
-func (w *Worker) gitCommit(msg string) error {
+// captureWorkingTreeState returns the set of dirty/untracked files in the working tree.
+// Used to diff before/after an agent run so we stage only files the agent changed.
+func captureWorkingTreeState(ctx context.Context, workdir string) map[string]bool {
+	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
+	if workdir != "" {
+		cmd.Dir = workdir
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	files := make(map[string]bool)
+	for _, line := range strings.Split(string(out), "\n") {
+		if len(line) < 4 {
+			continue
+		}
+		file := strings.TrimSpace(line[3:])
+		// Handle renames: "R  old -> new"
+		if idx := strings.Index(file, " -> "); idx >= 0 {
+			file = file[idx+4:]
+		}
+		if file != "" {
+			files[file] = true
+		}
+	}
+	return files
+}
+
+// gitCommit stages changes and creates a commit while holding the git mutex.
+// If files is non-empty, only those files are staged (scoped commit).
+// If files is empty/nil, falls back to staging all changes (git add -A).
+func (w *Worker) gitCommit(ctx context.Context, msg string, files []string) error {
 	w.GitMutex.Lock()
 	defer w.GitMutex.Unlock()
 
-	// git add -A
-	addCmd := exec.Command("git", "add", "-A")
-	addCmd.Dir = w.Config.Workdir
-	if out, err := addCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git add: %w\n%s", err, out)
+	if len(files) > 0 {
+		// Stage only the files changed by this worker's agent.
+		args := append([]string{"add", "--"}, files...)
+		addCmd := exec.CommandContext(ctx, "git", args...)
+		addCmd.Dir = w.Config.Workdir
+		if out, err := addCmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("git add: %w\n%s", err, out)
+		}
+	} else {
+		// Fallback: stage everything (snapshot unavailable).
+		addCmd := exec.CommandContext(ctx, "git", "add", "-A")
+		addCmd.Dir = w.Config.Workdir
+		if out, err := addCmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("git add: %w\n%s", err, out)
+		}
 	}
 
 	// Track modified files for deduplication detection.
-	diffCmd := exec.Command("git", "diff", "--cached", "--name-only")
+	diffCmd := exec.CommandContext(ctx, "git", "diff", "--cached", "--name-only")
 	diffCmd.Dir = w.Config.Workdir
 	if diffOut, err := diffCmd.Output(); err == nil {
-		if w.ModifiedFiles == nil {
-			w.ModifiedFiles = make(map[string]bool)
+		if w.modifiedFiles == nil {
+			w.modifiedFiles = make(map[string]bool)
 		}
 		for _, line := range strings.Split(strings.TrimSpace(string(diffOut)), "\n") {
 			if line != "" {
-				w.ModifiedFiles[line] = true
+				w.modifiedFiles[line] = true
 			}
 		}
 	}
 
-	// git commit -m "msg"
-	commitCmd := exec.Command("git", "commit", "-m", msg)
+	// git commit
+	commitCmd := exec.CommandContext(ctx, "git", "commit", "-m", msg)
 	commitCmd.Dir = w.Config.Workdir
 	if out, err := commitCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git commit: %w\n%s", err, out)

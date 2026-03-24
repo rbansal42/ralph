@@ -117,48 +117,6 @@ func ResolveEnvVarForModel(backend, model, key string) string {
 	}
 }
 
-// TokenEntriesFromConfig converts raw token config data into TokenEntry values
-// filtered for a specific backend. This is a helper intended to be called by
-// the consumer that has access to config.TokenConfig values.
-//
-// Each input should have Name, Key, and Backend fields. If Backend is empty,
-// the token is assumed to apply to the given backend.
-func TokenEntriesFromConfig(backend string, names, keys, backends []string) []TokenEntry {
-	var entries []TokenEntry
-	for i := range names {
-		if i >= len(keys) || i >= len(backends) {
-			break
-		}
-		tokenBackend := backends[i]
-		if tokenBackend == "" {
-			tokenBackend = backend
-		}
-		if tokenBackend != backend {
-			continue
-		}
-		entries = append(entries, TokenEntry{
-			Name:   names[i],
-			Key:    keys[i],
-			EnvVar: ResolveEnvVar(backend, keys[i]),
-		})
-	}
-	return entries
-}
-
-// BuildTokenEntries is a convenience wrapper that extracts parallel slices from
-// a structured token config list. Callers pass name/key/backend for each token.
-func BuildTokenEntries(backend string, tokens []struct{ Name, Key, Backend string }) []TokenEntry {
-	names := make([]string, len(tokens))
-	keys := make([]string, len(tokens))
-	backs := make([]string, len(tokens))
-	for i, t := range tokens {
-		names[i] = t.Name
-		keys[i] = t.Key
-		backs[i] = t.Backend
-	}
-	return TokenEntriesFromConfig(backend, names, keys, backs)
-}
-
 // Current returns the currently active token entry.
 // Returns a zero-value TokenEntry if no tokens are available.
 func (tm *TokenManager) Current() TokenEntry {

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -106,17 +105,16 @@ func Load(path string) (*Config, error) {
 		CommitBatchSize:        3,
 	}
 
-	if err := toml.Unmarshal(data, cfg); err != nil {
+	md, err := toml.Decode(string(data), cfg)
+	if err != nil {
 		return nil, fmt.Errorf("parsing config file: %w", err)
 	}
 
 	cfg.Model = ResolveModelAlias(cfg.Model)
 
 	// Default parallel_subagents to true when using opencode backend,
-	// unless explicitly set in the config file. We detect "not set" by
-	// checking if the raw TOML had the key — BurntSushi/toml leaves the
-	// zero value (false) when the key is absent. We use a separate check.
-	if !hasKey(data, "parallel_subagents") {
+	// unless explicitly set in the config file.
+	if !md.IsDefined("parallel_subagents") {
 		cfg.ParallelSubagents = (cfg.Backend == "opencode")
 	}
 
@@ -167,13 +165,6 @@ func AppendToken(path string, name, key string) error {
 	return nil
 }
 
-// hasKey does a simple check for whether a TOML key exists in raw data.
-// This avoids needing a separate "was this set?" bool for every field.
-func hasKey(data []byte, key string) bool {
-	// Look for the key as a line-start token: "key = " or "key="
-	s := string(data)
-	return strings.Contains(s, key+" =") || strings.Contains(s, key+"=")
-}
 
 // validate checks that cfg satisfies all required constraints.
 func validate(cfg *Config) error {

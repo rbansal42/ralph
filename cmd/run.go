@@ -281,7 +281,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 
 	// Build workers
-	globalUsage := &worker.TokenUsage{}
+	globalUsage := &worker.TokenUsage{Model: cfg.Model}
 	workers := make([]*worker.Worker, 0, len(cfg.Workers))
 	for i, wc := range cfg.Workers {
 		w := &worker.Worker{
@@ -298,7 +298,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 			TokenManager: tokenMgr,
 			PermHandler:  permHandler,
 			Notifier:     notifier,
-			Usage:        &worker.TokenUsage{},
+			Usage:        &worker.TokenUsage{Model: cfg.Model},
 			GlobalUsage:  globalUsage,
 		}
 		workers = append(workers, w)

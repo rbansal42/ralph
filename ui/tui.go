@@ -127,7 +127,7 @@ func (d *InlineDashboard) render() {
 	// Header
 	b.WriteString(s.title.Render("  RALPH") + " — Parallel Coding Agent Runner\n")
 	b.WriteString(s.dim.Render(fmt.Sprintf("  %s | %s | elapsed: %s",
-		d.config.Backend, d.config.Model, formatDuration(time.Since(d.startTime)))))
+		d.config.Backend, d.config.Model, FormatDuration(time.Since(d.startTime)))))
 	b.WriteString("\n")
 
 	// Separator
@@ -205,7 +205,11 @@ type tuiStyleEntry struct {
 	style lipgloss.Style
 }
 
-func formatDuration(d time.Duration) string {
+// FormatDuration formats a duration as "XhYYmZZs", omitting zero leading components.
+func FormatDuration(d time.Duration) string {
+	if d == 0 {
+		return "0s"
+	}
 	d = d.Round(time.Second)
 	h := int(d.Hours())
 	m := int(d.Minutes()) % 60
@@ -213,5 +217,8 @@ func formatDuration(d time.Duration) string {
 	if h > 0 {
 		return fmt.Sprintf("%dh%02dm%02ds", h, m, s)
 	}
-	return fmt.Sprintf("%dm%02ds", m, s)
+	if m > 0 {
+		return fmt.Sprintf("%dm%02ds", m, s)
+	}
+	return fmt.Sprintf("%ds", s)
 }

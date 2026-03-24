@@ -46,7 +46,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		var claimConflicts int
 		if ws != nil && len(ws.History) > 0 {
 			last := ws.History[len(ws.History)-1]
-			lastElapsed = formatDuration(time.Duration(last.ElapsedS * float64(time.Second)))
+			lastElapsed = ui.FormatDuration(time.Duration(last.ElapsedS * float64(time.Second)))
 		}
 		if ws != nil {
 			generation = ws.ParentGeneration
@@ -106,7 +106,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		}
 
 		fmt.Printf("  %-12s  iterations: %-4d  completed: %-4d  avg/iter: %s\n",
-			wc.Name, iters, ws.Completed, formatDuration(avgTime))
+			wc.Name, iters, ws.Completed, ui.FormatDuration(avgTime))
 
 		totalCompleted += ws.Completed
 		totalIterations += iters
@@ -132,34 +132,15 @@ func runStatus(cmd *cobra.Command, args []string) error {
 
 	if totalIterations > 0 {
 		avgIterTime := time.Duration(totalElapsedS / float64(totalIterations) * float64(time.Second))
-		fmt.Printf("  Avg time/iter:    %s\n", formatDuration(avgIterTime))
+		fmt.Printf("  Avg time/iter:    %s\n", ui.FormatDuration(avgIterTime))
 
 		if totalCompleted > 0 {
 			avgPerItem := time.Duration(totalElapsedS / float64(totalCompleted) * float64(time.Second))
 			estRemaining := time.Duration(float64(remaining) * float64(avgPerItem))
-			fmt.Printf("  Est. remaining:   %s\n", formatDuration(estRemaining))
+			fmt.Printf("  Est. remaining:   %s\n", ui.FormatDuration(estRemaining))
 		}
 	}
 
 	return nil
 }
 
-// formatDuration formats a duration as "XhYmZs", omitting zero leading components.
-func formatDuration(d time.Duration) string {
-	if d == 0 {
-		return "0s"
-	}
-
-	d = d.Round(time.Second)
-	h := int(d.Hours())
-	m := int(d.Minutes()) % 60
-	s := int(d.Seconds()) % 60
-
-	if h > 0 {
-		return fmt.Sprintf("%dh%dm%ds", h, m, s)
-	}
-	if m > 0 {
-		return fmt.Sprintf("%dm%ds", m, s)
-	}
-	return fmt.Sprintf("%ds", s)
-}
