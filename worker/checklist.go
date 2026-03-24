@@ -278,7 +278,12 @@ func getChangedFiles(startCommit, workdir string) map[string]bool {
 	if changedFilesCache.startCommit == startCommit &&
 		changedFilesCache.workdir == workdir &&
 		now.Sub(changedFilesCache.readAt) < changedFilesCache.ttl {
-		return changedFilesCache.files
+		// Return a copy so callers don't hold a reference to the cached map.
+		cp := make(map[string]bool, len(changedFilesCache.files))
+		for k, v := range changedFilesCache.files {
+			cp[k] = v
+		}
+		return cp
 	}
 
 	// Cache miss — run git diff

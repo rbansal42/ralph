@@ -2,8 +2,10 @@ package notify
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
+	"time"
 )
 
 // Event types for notifications.
@@ -60,6 +62,7 @@ func New(botToken, chatID string, notifyOn []string) Notifier {
 		botToken: botToken,
 		chatID:   chatID,
 		events:   events,
+		client:   &http.Client{Timeout: 10 * time.Second},
 	}
 }
 
