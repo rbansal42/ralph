@@ -187,11 +187,15 @@ func runTokenAdd(cmd *cobra.Command, args []string) error {
 		// Just key — auto-name
 		key = args[0]
 		name = fmt.Sprintf("token-%d", len(cfg.Tokens)+1)
+		fmt.Fprintln(os.Stderr, "Warning: API key passed as command-line argument (visible in process listings).")
+		fmt.Fprintln(os.Stderr, "  Consider using interactive mode instead: ralph token add")
 
 	case 2:
 		// name + key (original behavior)
 		name = args[0]
 		key = args[1]
+		fmt.Fprintln(os.Stderr, "Warning: API key passed as command-line argument (visible in process listings).")
+		fmt.Fprintln(os.Stderr, "  Consider using interactive mode instead: ralph token add")
 	}
 
 	// Check for duplicate name

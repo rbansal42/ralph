@@ -13,18 +13,39 @@ type TokenUsage struct {
 	OutputTokens int64
 	TotalTokens  int64
 	CostUSD      float64
+	Model        string // used for model-aware cost estimation
+}
+
+// modelPricing maps model IDs to [input $/M, output $/M] rates.
+var modelPricing = map[string][2]float64{
+	"anthropic/claude-opus-4-6":   {3.0, 15.0},
+	"anthropic/claude-sonnet-4-5": {3.0, 15.0},
+	"openai/gpt-5":               {2.0, 8.0},
+	"openai/gpt-5.3-codex":       {2.0, 8.0},
+	"openai/o3":                   {10.0, 40.0},
+	"openai/o4-mini":              {1.0, 4.0},
+}
+
+// costRates returns per-million-token rates for the given model.
+// Falls back to Opus pricing for unknown models.
+func costRates(model string) (inputPerM, outputPerM float64) {
+	if rates, ok := modelPricing[model]; ok {
+		return rates[0], rates[1]
+	}
+	return 3.0, 15.0 // default: Opus pricing
 }
 
 // Add accumulates token counts from a single iteration.
+// Cost is estimated using model-specific pricing (falls back to Opus rates).
 func (t *TokenUsage) Add(input, output int64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.InputTokens += input
 	t.OutputTokens += output
 	t.TotalTokens += input + output
-	// Rough cost estimate: $3/M input, $15/M output (Claude Opus ballpark)
-	t.CostUSD += float64(input) * 3.0 / 1_000_000
-	t.CostUSD += float64(output) * 15.0 / 1_000_000
+	inRate, outRate := costRates(t.Model)
+	t.CostUSD += float64(input) * inRate / 1_000_000
+	t.CostUSD += float64(output) * outRate / 1_000_000
 }
 
 // Snapshot returns a copy of current usage values.

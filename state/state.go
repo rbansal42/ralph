@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -85,6 +86,7 @@ func Load(path string) (*State, error) {
 }
 
 // Save writes the state to path as pretty-printed JSON.
+// Uses atomic write (temp file + rename) to prevent corruption on crash.
 func (s *State) Save(path string) error {
 	s.LastUpdated = time.Now().UTC().Format(time.RFC3339)
 
@@ -94,8 +96,27 @@ func (s *State) Save(path string) error {
 	}
 	data = append(data, '\n')
 
-	if err := os.WriteFile(path, data, 0644); err != nil {
-		return fmt.Errorf("writing state file: %w", err)
+	// Write to temp file in same directory, then rename for atomicity.
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".ralph_state_*.tmp")
+	if err != nil {
+		return fmt.Errorf("creating temp state file: %w", err)
+	}
+	tmpPath := tmp.Name()
+
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("writing temp state file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("closing temp state file: %w", err)
+	}
+
+	if err := os.Rename(tmpPath, path); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("renaming temp state file: %w", err)
 	}
 	return nil
 }
